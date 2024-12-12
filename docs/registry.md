@@ -558,7 +558,7 @@ You can also specify the full name for a tool using `mise use aqua:1password/cli
 | packer | [aqua:hashicorp/packer](https://github.com/hashicorp/packer) [asdf:asdf-community/asdf-hashicorp](https://github.com/asdf-community/asdf-hashicorp) |
 | pandoc | [asdf:Fbrisset/asdf-pandoc](https://github.com/Fbrisset/asdf-pandoc) |
 | patat | [asdf:airtonix/asdf-patat](https://github.com/airtonix/asdf-patat) |
-| pdm | [asdf:1oglop1/asdf-pdm](https://github.com/1oglop1/asdf-pdm) |
+| pdm | [pipx:pdm](https://pypi.org/project/pdm) [asdf:1oglop1/asdf-pdm](https://github.com/1oglop1/asdf-pdm) |
 | peco | [aqua:peco/peco](https://github.com/peco/peco) [asdf:asdf-community/asdf-peco](https://github.com/asdf-community/asdf-peco) |
 | periphery | [asdf:MontakOleg/asdf-periphery](https://github.com/MontakOleg/asdf-periphery) |
 | perl | [asdf:ouest/asdf-perl](https://github.com/ouest/asdf-perl) |
@@ -568,6 +568,7 @@ You can also specify the full name for a tool using `mise use aqua:1password/cli
 | pipelight | [asdf:kogeletey/asdf-pipelight](https://github.com/kogeletey/asdf-pipelight) |
 | pipenv | [asdf:mise-plugins/mise-pipenv](https://github.com/mise-plugins/mise-pipenv) |
 | pipx | [asdf:yozachar/asdf-pipx](https://github.com/yozachar/asdf-pipx) |
+| pitchfork | [ubi:jdx/pitchfork](https://github.com/jdx/pitchfork) |
 | pivnet | [aqua:pivotal-cf/pivnet-cli](https://github.com/pivotal-cf/pivnet-cli) [asdf:vmware-tanzu/tanzu-plug-in-for-asdf](https://github.com/vmware-tanzu/tanzu-plug-in-for-asdf) |
 | pkl | [aqua:apple/pkl](https://github.com/apple/pkl) [asdf:mise-plugins/asdf-pkl](https://github.com/mise-plugins/asdf-pkl) |
 | please | [aqua:thought-machine/please](https://github.com/thought-machine/please) [asdf:asdf-community/asdf-please](https://github.com/asdf-community/asdf-please) |
