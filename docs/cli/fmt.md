@@ -5,6 +5,8 @@
 
 Formats mise.toml
 
+Sorts keys and cleans up whitespace in mise.toml
+
 ## Flags
 
 ### `-a --all`
@@ -13,4 +15,6 @@ Format all files from the current directory
 
 Examples:
 
-    mise format
+```
+mise fmt
+```

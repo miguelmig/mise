@@ -125,7 +125,8 @@ impl Env {
     }
 
     fn output_dotenv(&self, config: &Config, ts: Toolset) -> Result<()> {
-        for (k, v) in ts.env(config)? {
+        let (env, _) = ts.final_env(config)?;
+        for (k, v) in env {
             let k = k.to_string();
             let v = v.to_string();
             miseprint!("{}={}\n", k, v)?;

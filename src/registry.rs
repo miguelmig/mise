@@ -1,10 +1,11 @@
 use crate::backend::backend_type::BackendType;
 use crate::cli::args::BackendArg;
 use crate::config::SETTINGS;
-use once_cell::sync::Lazy;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::env::consts::OS;
+use std::env::consts::{ARCH, OS};
+use std::fmt::Display;
 use std::iter::Iterator;
+use std::sync::LazyLock as Lazy;
 use strum::IntoEnumIterator;
 use url::Url;
 
@@ -15,13 +16,20 @@ pub static REGISTRY: Lazy<BTreeMap<&'static str, RegistryTool>> =
 #[derive(Debug, Clone)]
 pub struct RegistryTool {
     pub short: &'static str,
-    pub backends: Vec<&'static str>,
+    pub description: Option<&'static str>,
+    pub backends: &'static [RegistryBackend],
     #[allow(unused)]
     pub aliases: &'static [&'static str],
     pub test: &'static Option<(&'static str, &'static str)>,
     pub os: &'static [&'static str],
     pub depends: &'static [&'static str],
     pub idiomatic_files: &'static [&'static str],
+}
+
+#[derive(Debug, Clone)]
+pub struct RegistryBackend {
+    pub full: &'static str,
+    pub platforms: &'static [&'static str],
 }
 
 impl RegistryTool {
@@ -40,14 +48,21 @@ impl RegistryTool {
             }
             backend_types
         });
+        let platform = format!("{OS}-{ARCH}");
         self.backends
             .iter()
+            .filter(|rb| {
+                rb.platforms.is_empty()
+                    || rb.platforms.contains(&OS)
+                    || rb.platforms.contains(&ARCH)
+                    || rb.platforms.contains(&&*platform)
+            })
+            .map(|rb| rb.full)
             .filter(|full| {
                 full.split(':')
                     .next()
                     .is_some_and(|b| BACKEND_TYPES.contains(b))
             })
-            .copied()
             .collect()
     }
 
@@ -113,4 +128,10 @@ fn url_like(s: &str) -> bool {
         || s.starts_with("git@")
         || s.starts_with("ssh://")
         || s.starts_with("git://")
+}
+
+impl Display for RegistryTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.short)
+    }
 }

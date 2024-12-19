@@ -7,10 +7,9 @@ use std::sync::{Mutex, Once};
 
 use eyre::{eyre, Result};
 use idiomatic_version::IdiomaticVersionFile;
-use indexmap::IndexMap;
-use once_cell::sync::Lazy;
 use path_absolutize::Absolutize;
 use serde_derive::Deserialize;
+use std::sync::LazyLock as Lazy;
 use tool_versions::ToolVersions;
 use versions::Versioning;
 use xx::regex;
@@ -23,6 +22,7 @@ use crate::errors::Error::UntrustedConfig;
 use crate::file::display_path;
 use crate::hash::hash_to_str;
 use crate::hooks::Hook;
+use crate::redactions::Redactions;
 use crate::task::Task;
 use crate::toolset::{ToolRequest, ToolRequestSet, ToolSource, ToolVersionList, Toolset};
 use crate::ui::{prompt, style};
@@ -65,16 +65,22 @@ pub trait ConfigFile: Debug + Send + Sync {
             None => None,
         }
     }
-    fn plugins(&self) -> eyre::Result<HashMap<String, String>> {
+    fn config_root(&self) -> PathBuf {
+        config_root(self.get_path())
+    }
+    fn plugins(&self) -> Result<HashMap<String, String>> {
         Ok(Default::default())
     }
-    fn env_entries(&self) -> eyre::Result<Vec<EnvDirective>> {
+    fn env_entries(&self) -> Result<Vec<EnvDirective>> {
+        Ok(Default::default())
+    }
+    fn vars_entries(&self) -> Result<Vec<EnvDirective>> {
         Ok(Default::default())
     }
     fn tasks(&self) -> Vec<&Task> {
         Default::default()
     }
-    fn remove_plugin(&mut self, ba: &BackendArg) -> eyre::Result<()>;
+    fn remove_tool(&mut self, ba: &BackendArg) -> eyre::Result<()>;
     fn replace_versions(&mut self, ba: &BackendArg, versions: Vec<ToolRequest>)
         -> eyre::Result<()>;
     fn save(&self) -> eyre::Result<()>;
@@ -87,13 +93,15 @@ pub trait ConfigFile: Debug + Send + Sync {
     fn aliases(&self) -> eyre::Result<AliasMap> {
         Ok(Default::default())
     }
+
     fn task_config(&self) -> &TaskConfig {
         static DEFAULT_TASK_CONFIG: Lazy<TaskConfig> = Lazy::new(TaskConfig::default);
         &DEFAULT_TASK_CONFIG
     }
-    fn vars(&self) -> Result<&IndexMap<String, String>> {
-        static DEFAULT_VARS: Lazy<IndexMap<String, String>> = Lazy::new(IndexMap::new);
-        Ok(&DEFAULT_VARS)
+
+    fn redactions(&self) -> &Redactions {
+        static DEFAULT_REDACTIONS: Lazy<Redactions> = Lazy::new(Redactions::default);
+        &DEFAULT_REDACTIONS
     }
 
     fn watch_files(&self) -> Result<Vec<WatchFile>> {
@@ -140,7 +148,6 @@ impl dyn ConfigFile {
                         if let ToolRequest::Version {
                             version: _version,
                             source,
-                            os,
                             options,
                             backend,
                         } = tr
@@ -148,7 +155,6 @@ impl dyn ConfigFile {
                             tr = ToolRequest::Version {
                                 version: tv.version,
                                 source,
-                                os,
                                 options,
                                 backend,
                             };
@@ -208,9 +214,14 @@ fn init(path: &Path) -> Box<dyn ConfigFile> {
 }
 
 pub fn parse_or_init(path: &Path) -> eyre::Result<Box<dyn ConfigFile>> {
+    let path = if path.is_dir() {
+        path.join("mise.toml")
+    } else {
+        path.into()
+    };
     let cf = match path.exists() {
-        true => parse(path)?,
-        false => init(path),
+        true => parse(&path)?,
+        false => init(&path),
     };
     Ok(cf)
 }
@@ -234,7 +245,7 @@ pub fn parse(path: &Path) -> Result<Box<dyn ConfigFile>> {
 
 pub fn config_root(path: &Path) -> PathBuf {
     if is_global_config(path) {
-        return env::HOME.to_path_buf();
+        return env::MISE_GLOBAL_CONFIG_ROOT.to_path_buf();
     }
     let path = path
         .absolutize()
@@ -315,7 +326,7 @@ pub fn trust_check(path: &Path) -> eyre::Result<()> {
         if ans {
             trust(&config_root)?;
             return Ok(());
-        } else {
+        } else if console::user_attended_stderr() {
             add_ignored(config_root.to_path_buf())?;
         }
     }
@@ -493,7 +504,11 @@ fn trust_file_hash(path: &Path) -> eyre::Result<bool> {
 }
 
 fn detect_config_file_type(path: &Path) -> Option<ConfigFileType> {
-    match path.file_name().unwrap().to_str().unwrap() {
+    match path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("mise.toml")
+    {
         f if f.ends_with(".toml") => Some(ConfigFileType::MiseToml),
         f if env::MISE_OVERRIDE_CONFIG_FILENAMES.contains(f) => Some(ConfigFileType::MiseToml),
         f if env::MISE_DEFAULT_CONFIG_FILENAME.as_str() == f => Some(ConfigFileType::MiseToml),

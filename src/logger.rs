@@ -1,4 +1,4 @@
-use crate::config::Settings;
+use crate::config::{Config, Settings};
 use eyre::Result;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
@@ -6,9 +6,9 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::thread;
 
-use crate::{env, ui};
+use crate::{config, env, ui};
 use log::{Level, LevelFilter, Metadata, Record};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock as Lazy;
 
 #[derive(Debug)]
 struct Logger {
@@ -28,12 +28,17 @@ impl log::Log for Logger {
             if let Some(log_file) = &self.log_file {
                 let mut log_file = log_file.lock().unwrap();
                 let out = self.render(record, self.file_level);
-                let _ = writeln!(log_file, "{}", console::strip_ansi_codes(&out));
+                if !out.is_empty() {
+                    let _ = writeln!(log_file, "{}", console::strip_ansi_codes(&out));
+                }
             }
         }
         if record.level() <= self.term_level {
             ui::multi_progress_report::MultiProgressReport::suspend_if_active(|| {
-                eprintln!("{}", self.render(record, self.term_level));
+                let out = self.render(record, self.term_level);
+                if !out.is_empty() {
+                    eprintln!("{}", self.render(record, self.term_level));
+                }
             });
         }
     }
@@ -69,26 +74,29 @@ impl Logger {
     }
 
     fn render(&self, record: &Record, level: LevelFilter) -> String {
+        let mut args = record.args().to_string();
+        if config::is_loaded() {
+            let config = Config::get();
+            args = config.redact(args);
+        }
         match level {
             LevelFilter::Off => "".to_string(),
             LevelFilter::Trace => {
+                let level = record.level();
+                let file = record.file().unwrap_or("<unknown>");
+                if level == LevelFilter::Trace && file.contains("/expr-lang-") {
+                    return "".to_string();
+                };
                 let meta = ui::style::edim(format!(
                     "{thread_id:>2} [{file}:{line}]",
                     thread_id = thread_id(),
-                    file = record.file().unwrap_or("<unknown>"),
                     line = record.line().unwrap_or(0),
                 ));
-                format!(
-                    "{level} {meta} {args}",
-                    level = self.styled_level(record.level()),
-                    args = record.args()
-                )
+                format!("{level} {meta} {args}", level = self.styled_level(level),)
             }
-            LevelFilter::Debug => format!(
-                "{level} {args}",
-                level = self.styled_level(record.level()),
-                args = record.args()
-            ),
+            LevelFilter::Debug => {
+                format!("{level} {args}", level = self.styled_level(record.level()),)
+            }
             _ => {
                 let mise = match record.level() {
                     Level::Error => ui::style::ered("mise"),
@@ -96,11 +104,10 @@ impl Logger {
                     _ => ui::style::edim("mise"),
                 };
                 match record.level() {
-                    Level::Info => format!("{mise} {args}", args = record.args()),
+                    Level::Info => format!("{mise} {args}"),
                     _ => format!(
                         "{mise} {level} {args}",
                         level = self.styled_level(record.level()),
-                        args = record.args()
                     ),
                 }
             }

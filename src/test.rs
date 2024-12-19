@@ -12,10 +12,6 @@ fn init() {
     }
     console::set_colors_enabled(false);
     console::set_colors_enabled_stderr(false);
-    if env::var("__MISE_DIFF").is_ok() {
-        // TODO: fix this
-        panic!("cannot run tests when mise is activated");
-    }
     env::set_var(
         "HOME",
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test"),
@@ -59,9 +55,9 @@ fn init() {
             [tasks.test]
             run = 'echo "testing!"'
             [settings]
-            always_keep_download= true
-            always_keep_install= true
-            idiomatic_version_file= true
+            always_keep_download = true
+            always_keep_install = true
+            idiomatic_version_file = true
             plugin_autoupdate_last_check_duration = "20m"
             jobs = 2
             "#},

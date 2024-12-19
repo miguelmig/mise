@@ -95,6 +95,11 @@ export const commands: { [key: string]: Command } = {
   },
   doctor: {
     hide: false,
+    subcommands: {
+      path: {
+        hide: false,
+      },
+    },
   },
   en: {
     hide: false,
@@ -111,6 +116,9 @@ export const commands: { [key: string]: Command } = {
   generate: {
     hide: false,
     subcommands: {
+      config: {
+        hide: false,
+      },
       "git-pre-commit": {
         hide: false,
       },
@@ -135,6 +143,9 @@ export const commands: { [key: string]: Command } = {
     hide: false,
   },
   install: {
+    hide: false,
+  },
+  "install-into": {
     hide: false,
   },
   latest: {
@@ -234,11 +245,17 @@ export const commands: { [key: string]: Command } = {
       python: {
         hide: false,
       },
+      ruby: {
+        hide: false,
+      },
     },
   },
   tasks: {
     hide: false,
     subcommands: {
+      add: {
+        hide: false,
+      },
       deps: {
         hide: false,
       },
@@ -269,6 +286,9 @@ export const commands: { [key: string]: Command } = {
     hide: false,
   },
   unset: {
+    hide: false,
+  },
+  unuse: {
     hide: false,
   },
   upgrade: {

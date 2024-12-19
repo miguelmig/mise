@@ -1,3 +1,5 @@
+#:schema ./schema/mise-task.json
+
 clean = "cargo clean"
 release = "cargo release"
 signal-test = "node ./test/fixtures/signal-test.js"
@@ -30,11 +32,11 @@ run = "bun run docs:build"
 depends = ["build"]
 env = { CLICOLOR_FORCE = "0" }
 run = [
-    "mise usage > mise.usage.kdl",
-    "mise generate task-docs > tasks.md",
-    "rm -rf docs/cli && mkdir -p docs/cli",
-    "usage generate markdown -m --out-dir docs/cli --url-prefix /cli --html-encode --file mise.usage.kdl",
-    "markdownlint --fix docs/cli",
+  "mise usage > mise.usage.kdl",
+  "mise generate task-docs > tasks.md",
+  "rm -rf docs/cli && mkdir -p docs/cli",
+  "usage generate markdown -m --out-dir docs/cli --url-prefix /cli --html-encode --file mise.usage.kdl --replace-pre-with-code-fences",
+  "markdownlint --fix docs/cli",
 ]
 
 ["render:completions"]
@@ -65,15 +67,18 @@ run = "mise render-mangen"
 ["render:fig"]
 wait_for = ["render:completions"]
 run = [
-    "usage generate fig --file mise.usage.kdl --out-file xtasks/fig/src/mise.ts",
-    "tsx xtasks/fig/addCustomGenerators.ts xtasks/fig/src/mise.ts xtasks/fig/src/mise.ts"
+  "usage generate fig --file mise.usage.kdl --out-file xtasks/fig/src/mise.ts",
+  "tsx xtasks/fig/addCustomGenerators.ts xtasks/fig/src/mise.ts xtasks/fig/src/mise.ts",
 ]
 depends = ['docs:setup']
 
 ["render:help"]
 depends = ["build"]
 env = { NO_COLOR = "1" }
-run = ["mise render-help", "mise run show-output-on-failure -- mise x node@latest -- npx markdown-magic"]
+run = [
+  "mise render-help",
+  "mise run show-output-on-failure -- mise x node@latest -- npx markdown-magic",
+]
 sources = ["mise"]
 outputs = ["README.md"]
 
@@ -96,25 +101,39 @@ run = "cargo test --all-features"
 env = { CARGO_TERM_COLOR = "always", "RUST_TEST_THREADS" = "1" }
 
 ["docker:image"]
+hide = true                                                                                                                     # docker stuff is not working correctly right now
 description = "build docker image from Dockerfile"
 run = 'docker build --build-arg GITHUB_TOKEN=$GITHUB_API_TOKEN $root -f $root/packaging/dev/Dockerfile -t ghcr.io/jdx/mise:dev'
 
 ["docker:run"]
+hide = true                                                                                                                                                                            # docker stuff is not working correctly right now
 description = "run a command inside of development docker container"
 run = 'docker run -ti --rm -e GITHUB_API_TOKEN -e TEST_ALL -v $root:/mise -v /tmp/mise/target:/tmp/mise/target -v /tmp/mise/registry:/tmp/mise/registry -w /mise ghcr.io/jdx/mise:dev'
 depends = ["docker:image"]
 
 ["docker:cargo"]
+hide = true                                                      # docker stuff is not working correctly right now
 description = "run cargo inside of development docker container"
 run = 'mise tasks run docker:run cargo'
 
 ["docker:mise"]
+hide = true                                                     # docker stuff is not working correctly right now
 description = "run mise inside of development docker container"
 run = "mise tasks run -- docker:cargo run --"
 
 ["docker:e2e"]
+hide = true                                                          # docker stuff is not working correctly right now
 description = "run e2e tests inside of development docker container"
 run = "mise tasks run docker:mise run test:e2e"
 
 ["test:shuffle"]
 run = "cargo +nightly test --all-features -- -Z unstable-options --shuffle"
+
+[install-dev]
+run = "cargo install --path . --debug"
+
+[xxx]
+hide = true
+tools = { gh = "2.60.0" }
+run = "echo {{arg(name='greeting')}}"
+description = "a task for testing"

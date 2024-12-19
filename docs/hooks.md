@@ -1,6 +1,8 @@
 # Hooks <Badge type="warning" text="experimental" />
 
-You can have mise automatically execute scripts when it runs. The configuration goes into `mise.toml`.
+You can have mise automatically execute scripts during a `mise activate` session. You cannot use these
+without the `mise activate` shell hook installed in your shell—except the `preinstall` and `postinstall` hooks.
+The configuration goes into `mise.toml`.
 
 ## CD hook
 
@@ -20,7 +22,7 @@ This hook is run when the project is entered. Changing directories while in the 
 enter = "echo 'I entered the project'"
 ```
 
-## Leave hook (not yet implemented)
+## Leave hook
 
 This hook is run when the project is left. Changing directories while in the project will not trigger this hook.
 
@@ -80,7 +82,6 @@ implemented something similar.
 
 I think in most situations this is probably fine, though worth keeping in mind.
 
-The leave hook (when it's implemented) will give you a way to manually reset the state.
 :::
 
 ## Multiple hooks syntax

@@ -26,8 +26,8 @@ use console::style;
 use eyre::{bail, eyre, Result, WrapErr};
 use indexmap::IndexSet;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock as Lazy;
 
 pub mod aqua;
 pub mod asdf;
@@ -154,6 +154,9 @@ pub trait Backend: Debug + Send + Sync {
         BackendType::Core
     }
     fn ba(&self) -> &BackendArg;
+    fn description(&self) -> Option<String> {
+        None
+    }
     fn get_plugin_type(&self) -> Option<PluginType> {
         None
     }
@@ -290,11 +293,7 @@ pub trait Backend: Debug + Send + Sync {
             _ => None,
         }
     }
-    fn create_symlink(
-        &self,
-        version: &str,
-        target: &Path,
-    ) -> eyre::Result<Option<(PathBuf, PathBuf)>> {
+    fn create_symlink(&self, version: &str, target: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
         let link = self.ba().installs_path.join(version);
         if link.exists() {
             return Ok(None);
@@ -418,7 +417,10 @@ pub trait Backend: Debug + Send + Sync {
             }
         };
 
-        install_state::write_backend_meta(self.ba())?;
+        if tv.install_path().starts_with(*dirs::INSTALLS) {
+            // this will be false only for `install-into`
+            install_state::write_backend_meta(self.ba())?;
+        }
 
         self.cleanup_install_dirs(&tv);
         // attempt to touch all the .tool-version files to trigger updates in hook-env

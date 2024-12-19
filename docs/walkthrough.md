@@ -26,11 +26,7 @@ node -v
 
 And you'll also note that you now have a `mise.toml` file with the following content:
 
-```shell
-cat mise.toml
-```
-
-```toml
+```toml [mise.toml]
 [tools]
 node = "22"
 ```
@@ -126,13 +122,15 @@ _.path = "./node_modules/.bin"
 This will add `./node_modules/.bin` to the PATH for the project—with "." here referring to the directory
 the `mise.toml` file is in so if you enter a subdirectory, it will still work.
 
-_See [Environments](/environments) for more information on working with environment variables._
+_See [Environments](/environments/) for more information on working with environment variables._
 
 ## Tasks
 
-Tasks are defined in a project to execute commands. They are defined in `mise.toml`:
+Tasks are defined in a project to execute commands.
 
-```toml
+You can define tasks in a `mise.toml`:
+
+```toml [mise.toml]
 [tasks]
 build = "npm run build"
 test = "npm test"
@@ -140,7 +138,7 @@ test = "npm test"
 
 Or in a `mise-tasks` directory as a standalone file, such as `mise-tasks/build`:
 
-```bash
+```bash [mise-tasks/build]
 #!/bin/bash
 npm run build
 ```
@@ -153,35 +151,47 @@ mise run test
 ```
 
 :::tip
-`mise run` setups up the "mise environment" before running the task (tools and environment variables).
+`mise run` sets up the "mise environment" before running the task (tools and environment variables).
 So if you'd rather not activate mise in your shell, you can use `mise run` to run tasks, and it will
 have the tools in PATH and the environment variables from `mise.toml` set.
 :::
 
-mise is paired with [usage](https://usage.jdx.dev) which provides lots of features for documenting and running tasks.
+`mise` is paired with [usage](https://usage.jdx.dev) which provides lots of features for documenting and running tasks.
 
 Here is an example of a task with usage spec:
 
-```bash
-#!/bin/bash
-#USAGE flag "-f --force" "Force the greeting to be displayed"
-#USAGE flag "-u --user <user>" "The user to greet"
-#USAGE flag "-p --port <port>" default=8080 "The port to listen on"
-#USAGE flag "-c --color <color>" "The color to use" {
-#USAGE     choices "red" "green" "blue"
-#USAGE }
-#USAGE arg "message" "The message to greet the user with"
-#USAGE complete "user" run="mycli users"
+```bash [mise-tasks/greet]
+#!/usr/bin/env bash
+set -e
 
-echo "Hello, $usage_user! Your message is: $usage_message"
+#MISE description="Greet a user with a message"
+#USAGE flag "-g --greeting <greeting>" help="The greeting word to use" {
+#USAGE   choices "hi" "hello" "hey"
+#USAGE }
+#USAGE flag "-u --user <user>" help="The user to greet"
+#USAGE flag "--dir <dir>" help="The directory to greet from" default="."
+#USAGE complete "dir" run="find . -maxdepth 1 -type d"
+#USAGE arg "<message>" help="Greeting message"
+
+echo "all available options are in the env with the prefix 'usage_'"
+env | grep usage_
+
+echo "$usage_greeting, $usage_user! Your message is: $usage_message"
 ```
 
-The options will all be passed as environment variables prefixed with `usage_` like `usage_user`.
-Help is available with `mise run my-task --help` and will show the options defined in the task.
-Completions are available like you'd expect, so typing `mise run my-task --color <tab>` will show "red", "green", and "blue"
-as options. `mise run my-task --user <tab>` will execute `mycli users` and use the output as completions.
+This task can be run like so:
 
-No extra setup is required for completions so long as [mise completions](/cli/completion) are otherwise set up.
+```shell
+mise run greet --user jdx -g "hey" "How are you?"
+```
+
+- The options will all be passed as environment variables prefixed with `usage_` like `usage_user`.
+- Help is available with `mise run greet --help` and will show the options defined in the task.
+- Completions are available like you'd expect, so typing `mise run greet --greeting <tag>` will show `hi`, `hello`, and `hey`
+  as options.
+- [Custom completion](https://usage.jdx.dev/spec/reference/complete) can be provided by a CLI. `mise run greet --dir <tab>` will execute `find . -maxdepth 1 -type d` to provide completions.
+
+To get the autocopletion working, set up [mise autocompletions](/installing-mise.html#autocompletion).
 
 _See [Tasks](/tasks/) for more information on working with tasks._
 
@@ -216,7 +226,7 @@ programming languages or tools used on it.
 For further reading:
 
 - [Dev Tools](/dev-tools/) – A deeper overview of working with dev tools
-- [Environments](/environments) – A deeper overview of working with environment variables
+- [Environments](/environments/) – A deeper overview of working with environment variables
 - [Tasks](/tasks/) – A deeper overview of working with tasks
 - [Configuration](/configuration) – More information on `mise.toml` files
 - [Settings](/configuration/settings) – All the configuration settings available in mise

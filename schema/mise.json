@@ -8,13 +8,38 @@
       "additionalProperties": {
         "oneOf": [
           {
+            "type": "object",
+            "properties": {
+              "value": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "tools": {
+                "type": "boolean",
+                "description": "load tools before resolving"
+              },
+              "redact": {
+                "type": "boolean",
+                "description": "redact the value from logs"
+              }
+            }
+          },
+          {
             "type": "string"
           },
           {
             "type": "number"
           },
           {
-            "enum": [false],
             "type": "boolean"
           }
         ]
@@ -27,6 +52,32 @@
           "properties": {
             "file": {
               "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      ]
+                    },
+                    "tools": {
+                      "type": "boolean",
+                      "description": "load tools before resolving"
+                    },
+                    "redact": {
+                      "type": "boolean",
+                      "description": "redact the value from logs"
+                    }
+                  }
+                },
                 {
                   "description": "dotenv file to load",
                   "type": "string"
@@ -43,6 +94,28 @@
             },
             "path": {
               "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      ]
+                    },
+                    "redact": {
+                      "type": "boolean",
+                      "description": "redact the value from logs"
+                    }
+                  }
+                },
                 {
                   "description": "PATH entry to add",
                   "type": "string"
@@ -101,6 +174,32 @@
             },
             "source": {
               "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      ]
+                    },
+                    "tools": {
+                      "type": "boolean",
+                      "description": "load tools before resolving"
+                    },
+                    "redact": {
+                      "type": "boolean",
+                      "description": "redact the value from logs"
+                    }
+                  }
+                },
                 {
                   "description": "bash script to load",
                   "type": "string"
@@ -308,6 +407,10 @@
           "description": "Path to the global mise config file. Default is `~/.config/mise/config.toml`. This must be an env var.",
           "type": "string"
         },
+        "global_config_root": {
+          "description": "Path which is used as `{{config_root}}` for the global config file. Default is `$HOME`. This must be an env var.",
+          "type": "string"
+        },
         "go_default_packages_file": {
           "default": "~/.default-go-packages",
           "description": "Path to a file containing default go packages to install when installing go",
@@ -508,6 +611,10 @@
               "description": "Specify the architecture to use for precompiled binaries.",
               "type": "string"
             },
+            "precompiled_flavor": {
+              "description": "Specify the flavor to use for precompiled binaries.",
+              "type": "string"
+            },
             "precompiled_os": {
               "description": "Specify the OS to use for precompiled binaries.",
               "type": "string"
@@ -650,6 +757,32 @@
           "description": "Path to a file containing custom tool shorthands.",
           "type": "string"
         },
+        "silent": {
+          "description": "Suppress all `mise run|watch` output except errors—including what tasks output.",
+          "type": "boolean"
+        },
+        "sops": {
+          "additionalProperties": false,
+          "properties": {
+            "age_key": {
+              "description": "The age private key to use for sops secret decryption.",
+              "type": "string"
+            },
+            "age_key_file": {
+              "description": "Path to the age private key file to use for sops secret decryption.",
+              "type": "string"
+            },
+            "age_recipients": {
+              "description": "The age public keys to use for sops secret encryption.",
+              "type": "string"
+            },
+            "rops": {
+              "default": true,
+              "description": "Use rops to decrypt sops files. Disable to shell out to `sops` which will slow down mise but sops may offer features not available in rops.",
+              "type": "boolean"
+            }
+          }
+        },
         "status": {
           "additionalProperties": false,
           "properties": {
@@ -674,6 +807,10 @@
             "gpg_verify": {
               "description": "Use gpg to verify swift tool signatures.",
               "type": "boolean"
+            },
+            "platform": {
+              "description": "Override the platform to use for precompiled binaries.",
+              "type": "string"
             }
           }
         },
@@ -815,8 +952,40 @@
             "depends": {
               "description": "other tasks to run before this task",
               "items": {
-                "description": "task to run before this task",
-                "type": "string"
+                "oneOf": [
+                  {
+                    "description": "task with args to run before this task",
+                    "type": "string"
+                  },
+                  {
+                    "description": "task with args to run before this task",
+                    "items": {
+                      "description": "task name and args",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "depends_post": {
+              "description": "other tasks to run after this task",
+              "items": {
+                "oneOf": [
+                  {
+                    "description": "task with args to run after this task",
+                    "type": "string"
+                  },
+                  {
+                    "description": "task with args to run after this task",
+                    "items": {
+                      "description": "task name and args",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
               },
               "type": "array"
             },
@@ -852,6 +1021,51 @@
                 ]
               },
               "description": "environment variables",
+              "type": "object"
+            },
+            "tools": {
+              "description": "tools to install/activate before running this task",
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "description": "version of the tool to install",
+                    "type": "string"
+                  },
+                  {
+                    "properties": {
+                      "version": {
+                        "description": "version of the tool to install",
+                        "type": "string"
+                      },
+                      "os": {
+                        "oneOf": [
+                          {
+                            "description": "operating system to install on",
+                            "type": "array"
+                          },
+                          {
+                            "description": "option to pass to tool",
+                            "type": "string"
+                          },
+                          {
+                            "description": "option to pass to tool",
+                            "type": "boolean"
+                          }
+                        ]
+                      }
+                    },
+                    "required": ["version"],
+                    "type": "object",
+                    "additionalProperties": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
               "type": "object"
             },
             "hide": {
@@ -931,6 +1145,47 @@
     "vars": {
       "description": "variables to set",
       "type": "object",
+      "properties": {
+        "_": {
+          "description": "vars modules",
+          "additionalProperties": true,
+          "properties": {
+            "file": {
+              "oneOf": [
+                {
+                  "description": "dotenv file to load",
+                  "type": "string"
+                },
+                {
+                  "description": "dotenv files to load",
+                  "items": {
+                    "description": "dotenv file to load",
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "source": {
+              "oneOf": [
+                {
+                  "description": "bash script to load",
+                  "type": "string"
+                },
+                {
+                  "description": "bash scripts to load",
+                  "items": {
+                    "description": "bash script to load",
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
       "additionalProperties": {
         "description": "value of variable",
         "type": "string"
@@ -1096,6 +1351,13 @@
       "description": "minimum version of mise required to use this config",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
       "type": "string"
+    },
+    "redactions": {
+      "description": "env or vars keys to redact from logs",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "plugins": {
       "additionalProperties": {

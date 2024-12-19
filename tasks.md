@@ -17,38 +17,6 @@
 
 - **Usage**: `clean`
 
-## `docker:cargo`
-
-- **Usage**: `docker:cargo`
-
-run cargo inside of development docker container
-
-## `docker:e2e`
-
-- **Usage**: `docker:e2e`
-
-run e2e tests inside of development docker container
-
-## `docker:image`
-
-- **Usage**: `docker:image`
-
-build docker image from Dockerfile
-
-## `docker:mise`
-
-- **Usage**: `docker:mise`
-
-run mise inside of development docker container
-
-## `docker:run`
-
-- Depends: docker:image
-
-- **Usage**: `docker:run`
-
-run a command inside of development docker container
-
 ## `docs`
 
 - Depends: docs:setup
@@ -109,6 +77,10 @@ User to run as
 ## `filetask.bat`
 
 - **Usage**: `filetask.bat`
+
+## `install-dev`
+
+- **Usage**: `install-dev`
 
 ## `lint`
 
@@ -265,3 +237,7 @@ run end-to-end tests
 - **Usage**: `test:unit`
 
 run unit tests
+
+## `update-descriptions`
+
+- **Usage**: `update-descriptions`

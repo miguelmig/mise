@@ -8,24 +8,38 @@ In addition to defining tasks through the configuration, they can also be define
 - `.mise/tasks/:task_name`
 - `.config/mise/tasks/:task_name`
 
-Note that you can include additional directories using the [task_config](/tasks/#task-configuration) section.
+Note that you can include additional directories using the [task_config](/tasks/task-configuration.html#task-config-options) section.
 
 Here is an example of a file task that builds a Rust CLI:
 
-```bash
+```bash [mise-tasks/build]
 #!/usr/bin/env bash
 #MISE description="Build the CLI"
 cargo build
 ```
 
+::: tip Important
 Ensure that the file is executable, otherwise mise will not be able to detect it.
 
-:::tip
-The `mise:description` comment is optional but recommended. It will be used in the output of `mise tasks`.
-The other configuration for "script" tasks is supported in this format so you can specify things like the
-following-note that this is parsed a TOML table:
+```shell
+chmod +x mise-tasks/build
+```
+
+:::
+
+Having the code in a bash file and not TOML helps make it work
+better in editors since they can do syntax highlighting and linting more easily.
+
+They also still work great for non-mise users—though
+of course they'll need to find a different way to install their dev tools the tasks might use.
+
+## Task Configuration
+
+All configuration options can be found here [task configuration](/tasks/task-configuration)
+You can provide additional configuration for file tasks by adding `#MISE` comments at the top of the file.
 
 ```bash
+#MISE description="Build the CLI"
 #MISE alias="b"
 #MISE sources=["Cargo.toml", "src/**/*.rs"]
 #MISE outputs=["target/debug/mycli"]
@@ -33,30 +47,58 @@ following-note that this is parsed a TOML table:
 #MISE depends=["lint", "test"]
 ```
 
-Assuming that file was located in `.mise/tasks/build`, it can then be run with `mise run build` (or with its alias: `mise run b`).
-This script can be edited with by running `mise task edit build` (using $EDITOR). If it doesn't exist it will be created.
-These are convenient for quickly making new scripts. Having the code in a bash file and not TOML helps make it work
-better in editors since they can do syntax highlighting and linting more easily. They also still work great for non-mise users—though
-of course they'll need to find a different way to install their dev tools the tasks might use.
+Assuming that file was located in `mise-tasks/build`, it can then be run with `mise run build` (or with its alias: `mise run b`).
+
+## Shebang
+
+The shebang line is optional, but if it is present, it will be used to determine the shell to run the script with.
+You can also use it to run the script with various programming languages.
+
+::: code-group
+
+```js [node]
+#!/usr/bin/env node
+//MISE description="Hello, World in Node.js"
+
+console.log("Hello, World!");
+```
+
+```python
+#!/usr/bin/env python
+#MISE description="Hello, World in Python"
+
+print('Hello, World!')
+```
+
+```ts [deno]
+#!/usr/bin/env -S deno run --allow-env
+//MISE description="Hello, World in Deno"
+
+console.log(`PATH, ${Deno.env.get("PATH")}`);
+```
+
 :::
+
+## Editing tasks
+
+This script can be edited with by running `mise task edit build` (using `$EDITOR`). If it doesn't exist it will be created.
+This is convenient for quickly editing or creating new scripts.
 
 ## Task Grouping
 
-File tasks in `.mise/tasks`, `mise/tasks`, or `.config/mise/tasks` can be grouped into
+File tasks in `mise-tasks`, `.mise/tasks`, `mise/tasks`, or `.config/mise/tasks` can be grouped into
 sub-directories which will automatically apply prefixes to their names
 when loaded.
 
-### Example
-
-With a folder structure like below:
+**Example**: With a folder structure like below:
 
 ```text
-.mise
-└── tasks
-    ├── build
-    └── test
-        ├── integration
-        └── units
+mise-tasks
+├── build
+└── test
+    ├── _default
+    ├── integration
+    └── units
 ```
 
 Running `mise tasks` will give the below output:
@@ -64,9 +106,10 @@ Running `mise tasks` will give the below output:
 ```text
 $ mise tasks
 Name              Description Source
-build                         .../.mise/tasks/build
-test:integration              .../.mise/tasks/test/integration
-test:units                    .../.mise/tasks/test/units
+build                         ./mise-tasks/build
+test                          ./mise-tasks/test/_default
+test:integration              ./mise-tasks/test/integration
+test:units                    ./mise-tasks/test/units
 ```
 
 ## Arguments
@@ -80,9 +123,11 @@ The `usage` CLI is not required to execute mise tasks with the usage spec.
 However, for completions to work, the `usage` CLI must be installed and available in the PATH.
 :::
 
+### Example file task with arguments
+
 Here is an example of a file task that builds a Rust CLI using some of the features of usage:
 
-```bash
+```bash [mise-tasks/build]
 #!/usr/bin/env bash
 set -e
 
@@ -101,10 +146,67 @@ fi
 cargo build --profile "${usage_profile:-debug}" --target "$usage_target"
 ```
 
-Completions will now be enabled for your task. In this example, `mise run build --profile <tab><tab>`
-will show `debug` and `release` as options. The `--user` flag will also show completions generated by the output of `mycli users`.
+If you have installed `usage`, completions will be enabled for your task. In this example,
+
+- `mise run build --profile <tab><tab>`
+  will show `debug` and `release` as options.
+- The `--user` flag will also show completions generated by the output of `mycli users`.
 
 (Note that cli and markdown help for tasks is not yet implemented in mise as of this writing but that is planned.)
+
+:::tip
+If you don't get any autocomplete suggestions, use the `-v` (verbose) flag to see what's going on.
+For example, if you use `mise run build -v` and have an invalid `usage` spec, you will see an error message such as `DEBUG failed to parse task file with usage`
+:::
+
+### Example of a NodeJS file task with arguments
+
+Here is how you can use [usage](https://usage.jdx.dev/cli/scripts#usage-scripts) to parse arguments in a Node.js script:
+
+```js [mise-tasks/greet]
+#!/usr/bin/env -S node
+//MISE description="Write a greeting to a file"
+//USAGE flag "-f --force" help="Overwrite existing <file>"
+//USAGE flag "-u --user <user>" help="User to run as"
+//USAGE arg "<output_file>" help="The file to write" default="file.txt" {
+//USAGE   choices "greeting.txt" "file.txt"
+//USAGE }
+
+const fs = require("fs");
+
+const { usage_user, usage_force, usage_output_file } = process.env;
+
+if (usage_force === "true") {
+  fs.rmSync(usage_file, { force: true });
+}
+
+const user = usage_user ?? "world";
+fs.appendFileSync(usage_file, `Hello, ${user}\n`);
+console.log(`Greeting written to ${usage_file}`);
+```
+
+Run it with:
+
+```shell
+mise run greet greeting.txt --user Alice
+# Greeting written to file.txt
+```
+
+If you pass an invalid argument, you will get an error message:
+
+```shell
+mise run greet invalid.txt --user Alice
+# [greet] ERROR
+#   0: Invalid choice for arg output_file: invalid.txt, expected one of greeting.txt, file.txt
+```
+
+Autocomplete will show the available choices for the `output_file` argument if `usage` is installed.
+
+```shell
+mise run <TAB>
+# > greeting.txt
+#   file.txt
+```
 
 ## CWD
 
@@ -132,15 +234,3 @@ mise run ./path/to/script.sh
 ```
 
 Note that the path must start with `/` or `./` to be considered a file path. (On Windows it can be `C:\` or `.\`)
-
-## Remote tasks
-
-Task files can be fetched via http:
-
-```toml
-[tasks.build]
-file = "https://example.com/build.sh"
-```
-
-Currently, they're fetched everytime they're executed, but we may add some cache support later.
-This could be extended with other protocols like mentioned in [this ticket](https://github.com/jdx/mise/issues/2488) if there were interest.

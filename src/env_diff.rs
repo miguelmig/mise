@@ -1,15 +1,18 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Debug;
 use std::io::prelude::*;
+use std::iter::once;
 use std::path::{Path, PathBuf};
 
 use base64::prelude::*;
 use eyre::Result;
 use flate2::write::{ZlibDecoder, ZlibEncoder};
 use flate2::Compression;
+use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use serde_derive::{Deserialize, Serialize};
+use std::sync::LazyLock as Lazy;
 
 use crate::env::PATH_KEY;
 use crate::{cmd, file};
@@ -17,9 +20,9 @@ use crate::{cmd, file};
 #[derive(Default, Serialize, Deserialize)]
 pub struct EnvDiff {
     #[serde(default)]
-    pub old: HashMap<String, String>,
+    pub old: IndexMap<String, String>,
     #[serde(default)]
-    pub new: HashMap<String, String>,
+    pub new: IndexMap<String, String>,
     #[serde(default)]
     pub path: Vec<PathBuf>,
 }
@@ -32,9 +35,10 @@ pub enum EnvDiffOperation {
 }
 
 pub type EnvDiffPatches = Vec<EnvDiffOperation>;
+pub type EnvMap = BTreeMap<String, String>;
 
 impl EnvDiff {
-    pub fn new<T>(original: &HashMap<String, String>, additions: T) -> EnvDiff
+    pub fn new<T>(original: &EnvMap, additions: T) -> EnvDiff
     where
         T: IntoIterator<Item = (String, String)>,
     {
@@ -58,17 +62,23 @@ impl EnvDiff {
         diff
     }
 
-    pub fn from_bash_script<T, U, V>(script: &Path, dir: &Path, env: T) -> Result<Self>
+    pub fn from_bash_script<T, U, V>(
+        script: &Path,
+        dir: &Path,
+        env: T,
+        opts: EnvDiffOptions,
+    ) -> Result<Self>
     where
         T: IntoIterator<Item = (U, V)>,
         U: Into<OsString>,
         V: Into<OsString>,
     {
-        let env: HashMap<OsString, OsString> =
+        let env: IndexMap<OsString, OsString> =
             env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
         let bash_path = file::which("bash").unwrap_or("/bin/bash".into());
         let out = cmd!(
             bash_path,
+            "--noprofile",
             "-c",
             indoc::formatdoc! {"
                 . {script}
@@ -78,18 +88,18 @@ impl EnvDiff {
         .dir(dir)
         .full_env(&env)
         .read()?;
-        let env: HashMap<String, String> = env
+        let env: EnvMap = env
             .into_iter()
             .map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()))
             .collect();
 
-        let mut additions = HashMap::new();
+        let mut additions = EnvMap::new();
         let mut cur_key = None;
         for line in out.lines() {
             match line.strip_prefix("declare -x ") {
                 Some(line) => {
                     let (k, v) = line.split_once('=').unwrap_or_default();
-                    if valid_key(k) {
+                    if invalid_key(k, &opts) {
                         continue;
                     }
                     cur_key = Some(k.to_string());
@@ -158,20 +168,9 @@ impl EnvDiff {
     }
 }
 
-fn valid_key(k: &str) -> bool {
+fn invalid_key(k: &str, opts: &EnvDiffOptions) -> bool {
     k.is_empty()
-        || k == "_"
-        || k == "SHLVL"
-        || k == *PATH_KEY
-        || k == "PWD"
-        || k == "OLDPWD"
-        || k == "HOME"
-        || k == "USER"
-        || k == "SHELL"
-        || k == "SHELLOPTS"
-        || k == "COMP_WORDBREAKS"
-        || k == "PS1"
-        || k == "PROMPT_DIRTRIM"
+        || opts.ignore_keys.contains(k)
         // following two ignores are for exported bash functions and exported bash
         // functions which are multiline, they appear in the environment as e.g.:
         // BASH_FUNC_exported-bash-function%%=() { echo "this is an"
@@ -182,9 +181,28 @@ fn valid_key(k: &str) -> bool {
         || k.starts_with(' ')
 }
 
+static DEFAULT_IGNORE_KEYS: Lazy<IndexSet<String>> = Lazy::new(|| {
+    [
+        "_",
+        "SHLVL",
+        "PWD",
+        "OLDPWD",
+        "HOME",
+        "USER",
+        "SHELL",
+        "SHELLOPTS",
+        "COMP_WORDBREAKS",
+        "PS1",
+        "PROMPT_DIRTRIM",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+});
+
 impl Debug for EnvDiff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let print_sorted = |hashmap: &HashMap<String, String>| {
+        let print_sorted = |hashmap: &IndexMap<String, String>| {
             hashmap
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
@@ -245,6 +263,22 @@ fn normalize_escape_sequences(input: &str) -> String {
     result
 }
 
+pub struct EnvDiffOptions {
+    pub ignore_keys: IndexSet<String>,
+}
+
+impl Default for EnvDiffOptions {
+    fn default() -> Self {
+        Self {
+            ignore_keys: DEFAULT_IGNORE_KEYS
+                .iter()
+                .cloned()
+                .chain(once(PATH_KEY.to_string()))
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,12 +334,16 @@ mod tests {
         "#);
     }
 
-    fn new_from_hashmap() -> HashMap<String, String> {
-        HashMap::from([("a", "1"), ("b", "2")].map(|(k, v)| (k.into(), v.into())))
+    fn new_from_hashmap() -> EnvMap {
+        [("a", "1"), ("b", "2")]
+            .map(|(k, v)| (k.into(), v.into()))
+            .into()
     }
 
-    fn new_to_hashmap() -> HashMap<String, String> {
-        HashMap::from([("a", "1"), ("b", "3"), ("c", "4")].map(|(k, v)| (k.into(), v.into())))
+    fn new_to_hashmap() -> EnvMap {
+        [("a", "1"), ("b", "3"), ("c", "4")]
+            .map(|(k, v)| (k.into(), v.into()))
+            .into()
     }
 
     #[test]
@@ -349,7 +387,7 @@ mod tests {
             .map(|(k, v)| (k.into(), v.into()))
             .collect::<Vec<(String, String)>>();
         let cwd = dirs::CWD.clone().unwrap();
-        let ed = EnvDiff::from_bash_script(path.as_path(), &cwd, orig).unwrap();
+        let ed = EnvDiff::from_bash_script(path.as_path(), &cwd, orig, Default::default()).unwrap();
         assert_debug_snapshot!(ed);
     }
 
