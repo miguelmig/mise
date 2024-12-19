@@ -420,7 +420,8 @@ const completionSpec: Fig.Spec = {
                         "fish",
                         "nu",
                         "xonsh",
-                        "zsh"
+                        "zsh",
+                        "pwsh"
                     ]
                 }
             ]
@@ -652,6 +653,15 @@ const completionSpec: Fig.Spec = {
                 "completion"
             ],
             "description": "Generate shell completions",
+            "options": [
+                {
+                    "name": [
+                        "--include-bash-completion-lib"
+                    ],
+                    "description": "Include the bash completion library in the bash completion script",
+                    "isRepeatable": false
+                }
+            ],
             "args": [
                 {
                     "name": "shell",
@@ -680,6 +690,19 @@ const completionSpec: Fig.Spec = {
                     ],
                     "description": "[experimental] Generate a mise.toml file",
                     "options": [
+                        {
+                            "name": [
+                                "-t",
+                                "--tool-versions"
+                            ],
+                            "description": "Path to a .tool-versions file to import tools from",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "tool_versions",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
                         {
                             "name": [
                                 "-o",
@@ -727,7 +750,8 @@ const completionSpec: Fig.Spec = {
                 },
                 {
                     "name": [
-                        "ls"
+                        "ls",
+                        "list"
                     ],
                     "description": "List config files currently in use",
                     "options": [
@@ -834,7 +858,25 @@ const completionSpec: Fig.Spec = {
                 "doctor",
                 "dr"
             ],
-            "description": "Check mise installation for possible problems"
+            "description": "Check mise installation for possible problems",
+            "subcommands": [
+                {
+                    "name": [
+                        "path"
+                    ],
+                    "description": "Print the current PATH entries mise is providing",
+                    "options": [
+                        {
+                            "name": [
+                                "-f",
+                                "--full"
+                            ],
+                            "description": "Print all entries including those not provided by mise",
+                            "isRepeatable": false
+                        }
+                    ]
+                }
+            ]
         },
         {
             "name": [
@@ -913,7 +955,8 @@ const completionSpec: Fig.Spec = {
                             "fish",
                             "nu",
                             "xonsh",
-                            "zsh"
+                            "zsh",
+                            "pwsh"
                         ]
                     }
                 }
@@ -1008,6 +1051,41 @@ const completionSpec: Fig.Spec = {
             ],
             "description": "[experimental] Generate files for various tools/services",
             "subcommands": [
+                {
+                    "name": [
+                        "config",
+                        "g"
+                    ],
+                    "description": "[experimental] Generate a mise.toml file",
+                    "options": [
+                        {
+                            "name": [
+                                "-t",
+                                "--tool-versions"
+                            ],
+                            "description": "Path to a .tool-versions file to import tools from",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "tool_versions",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "-o",
+                                "--output"
+                            ],
+                            "description": "Output to file instead of stdout",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "output",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        }
+                    ]
+                },
                 {
                     "name": [
                         "git-pre-commit",
@@ -1724,11 +1802,10 @@ const completionSpec: Fig.Spec = {
             ],
             "args": [
                 {
-                    "name": "plugin",
-                    "description": "Prune only versions from this plugin(s)",
+                    "name": "installed_tool",
+                    "description": "Prune only these tools",
                     "isOptional": true,
-                    "isVariadic": true,
-                    "generators": pluginGenerator
+                    "isVariadic": true
                 }
             ]
         },
@@ -1806,6 +1883,14 @@ const completionSpec: Fig.Spec = {
                 },
                 {
                     "name": [
+                        "-c",
+                        "--continue-on-error"
+                    ],
+                    "description": "Continue running tasks even if one fails",
+                    "isRepeatable": false
+                },
+                {
+                    "name": [
                         "-n",
                         "--dry-run"
                     ],
@@ -1818,22 +1903,6 @@ const completionSpec: Fig.Spec = {
                         "--force"
                     ],
                     "description": "Force the tasks to run even if outputs are up to date",
-                    "isRepeatable": false
-                },
-                {
-                    "name": [
-                        "-p",
-                        "--prefix"
-                    ],
-                    "description": "Print stdout/stderr by line, prefixed with the tasks's label\nDefaults to true if --jobs > 1\nConfigure with `task_output` config or `MISE_TASK_OUTPUT` env var",
-                    "isRepeatable": false
-                },
-                {
-                    "name": [
-                        "-i",
-                        "--interleave"
-                    ],
-                    "description": "Print directly to stdout/stderr instead of by line\nDefaults to true if --jobs == 1\nConfigure with `task_output` config or `MISE_TASK_OUTPUT` env var",
                     "isRepeatable": false
                 },
                 {
@@ -1898,6 +1967,25 @@ const completionSpec: Fig.Spec = {
                     ],
                     "description": "Don't show extra output",
                     "isRepeatable": false
+                },
+                {
+                    "name": [
+                        "-S",
+                        "--silent"
+                    ],
+                    "description": "Don't show any output except for errors",
+                    "isRepeatable": false
+                },
+                {
+                    "name": [
+                        "--output"
+                    ],
+                    "isRepeatable": false,
+                    "args": {
+                        "name": "output",
+                        "isOptional": false,
+                        "isVariadic": false
+                    }
                 }
             ],
             "generateSpec": usageGenerateSpec(["mise tasks --usage"]),
@@ -2252,7 +2340,7 @@ const completionSpec: Fig.Spec = {
                 {
                     "name": "tool@version",
                     "description": "Tool(s) to use",
-                    "isOptional": true,
+                    "isOptional": false,
                     "isVariadic": true,
                     "generators": toolVersionGenerator
                 }
@@ -2262,7 +2350,7 @@ const completionSpec: Fig.Spec = {
             "name": [
                 "sync"
             ],
-            "description": "Add tool versions from external tools to mise",
+            "description": "Synchronize tools from other version managers with mise",
             "subcommands": [
                 {
                     "name": [
@@ -2305,6 +2393,28 @@ const completionSpec: Fig.Spec = {
                             ],
                             "description": "Get tool versions from pyenv",
                             "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "--uv"
+                            ],
+                            "description": "Sync tool versions with uv (2-way sync)",
+                            "isRepeatable": false
+                        }
+                    ]
+                },
+                {
+                    "name": [
+                        "ruby"
+                    ],
+                    "description": "Symlinks all ruby tool versions from an external tool into mise",
+                    "options": [
+                        {
+                            "name": [
+                                "--brew"
+                            ],
+                            "description": "Get tool versions from Homebrew",
+                            "isRepeatable": false
                         }
                     ]
                 }
@@ -2317,6 +2427,194 @@ const completionSpec: Fig.Spec = {
             ],
             "description": "Manage tasks",
             "subcommands": [
+                {
+                    "name": [
+                        "add"
+                    ],
+                    "description": "Create a new task",
+                    "options": [
+                        {
+                            "name": [
+                                "--description"
+                            ],
+                            "description": "Description of the task",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "description",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "-a",
+                                "--alias"
+                            ],
+                            "description": "Other names for the task",
+                            "isRepeatable": true,
+                            "args": {
+                                "name": "alias",
+                                "isOptional": false,
+                                "isVariadic": false,
+                                "generators": aliasGenerator
+                            }
+                        },
+                        {
+                            "name": [
+                                "--depends-post"
+                            ],
+                            "description": "Dependencies to run after the task runs",
+                            "isRepeatable": true,
+                            "args": {
+                                "name": "depends_post",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "-w",
+                                "--wait-for"
+                            ],
+                            "description": "Wait for these tasks to complete if they are to run",
+                            "isRepeatable": true,
+                            "args": {
+                                "name": "wait_for",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "-D",
+                                "--dir"
+                            ],
+                            "description": "Run the task in a specific directory",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "dir",
+                                "isOptional": false,
+                                "isVariadic": false,
+                                "template": "folders"
+                            }
+                        },
+                        {
+                            "name": [
+                                "-H",
+                                "--hide"
+                            ],
+                            "description": "Hide the task from `mise task` and completions",
+                            "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "-r",
+                                "--raw"
+                            ],
+                            "description": "Directly connect stdin/stdout/stderr",
+                            "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "-s",
+                                "--sources"
+                            ],
+                            "description": "Glob patterns of files this task uses as input",
+                            "isRepeatable": true,
+                            "args": {
+                                "name": "sources",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "--outputs"
+                            ],
+                            "description": "Glob patterns of files this task creates, to skip if they are not modified",
+                            "isRepeatable": true,
+                            "args": {
+                                "name": "outputs",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "--shell"
+                            ],
+                            "description": "Run the task in a specific shell",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "shell",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "-q",
+                                "--quiet"
+                            ],
+                            "description": "Do not print the command before running",
+                            "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "--silent"
+                            ],
+                            "description": "Do not print the command or its output",
+                            "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "-d",
+                                "--depends"
+                            ],
+                            "description": "Add dependencies to the task",
+                            "isRepeatable": true,
+                            "args": {
+                                "name": "depends",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "--run-windows"
+                            ],
+                            "description": "Command to run on windows",
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "run_windows",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
+                        },
+                        {
+                            "name": [
+                                "-f",
+                                "--file"
+                            ],
+                            "description": "Create a file task instead of a toml task",
+                            "isRepeatable": false
+                        }
+                    ],
+                    "args": [
+                        {
+                            "name": "task",
+                            "description": "Tasks name to add",
+                            "isOptional": false,
+                            "isVariadic": false,
+                            "generators": simpleTaskGenerator
+                        },
+                        {
+                            "name": "run",
+                            "isOptional": true,
+                            "isVariadic": true
+                        }
+                    ]
+                },
                 {
                     "name": [
                         "deps"
@@ -2491,6 +2789,14 @@ const completionSpec: Fig.Spec = {
                         },
                         {
                             "name": [
+                                "-c",
+                                "--continue-on-error"
+                            ],
+                            "description": "Continue running tasks even if one fails",
+                            "isRepeatable": false
+                        },
+                        {
+                            "name": [
                                 "-n",
                                 "--dry-run"
                             ],
@@ -2503,22 +2809,6 @@ const completionSpec: Fig.Spec = {
                                 "--force"
                             ],
                             "description": "Force the tasks to run even if outputs are up to date",
-                            "isRepeatable": false
-                        },
-                        {
-                            "name": [
-                                "-p",
-                                "--prefix"
-                            ],
-                            "description": "Print stdout/stderr by line, prefixed with the tasks's label\nDefaults to true if --jobs > 1\nConfigure with `task_output` config or `MISE_TASK_OUTPUT` env var",
-                            "isRepeatable": false
-                        },
-                        {
-                            "name": [
-                                "-i",
-                                "--interleave"
-                            ],
-                            "description": "Print directly to stdout/stderr instead of by line\nDefaults to true if --jobs == 1\nConfigure with `task_output` config or `MISE_TASK_OUTPUT` env var",
                             "isRepeatable": false
                         },
                         {
@@ -2583,6 +2873,25 @@ const completionSpec: Fig.Spec = {
                             ],
                             "description": "Don't show extra output",
                             "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "-S",
+                                "--silent"
+                            ],
+                            "description": "Don't show any output except for errors",
+                            "isRepeatable": false
+                        },
+                        {
+                            "name": [
+                                "--output"
+                            ],
+                            "isRepeatable": false,
+                            "args": {
+                                "name": "output",
+                                "isOptional": false,
+                                "isVariadic": false
+                            }
                         }
                     ],
                     "args": [
@@ -2703,6 +3012,13 @@ const completionSpec: Fig.Spec = {
                 },
                 {
                     "name": [
+                        "--description"
+                    ],
+                    "description": "Only show description field",
+                    "isRepeatable": false
+                },
+                {
+                    "name": [
                         "--installed"
                     ],
                     "description": "Only show installed versions",
@@ -2795,9 +3111,7 @@ const completionSpec: Fig.Spec = {
         },
         {
             "name": [
-                "uninstall",
-                "remove",
-                "rm"
+                "uninstall"
             ],
             "description": "Removes installed tool versions",
             "options": [
@@ -2863,6 +3177,39 @@ const completionSpec: Fig.Spec = {
                     "description": "Environment variable(s) to remove\ne.g.: NODE_ENV",
                     "isOptional": true,
                     "isVariadic": true
+                }
+            ]
+        },
+        {
+            "name": [
+                "unuse",
+                "rm",
+                "remove"
+            ],
+            "description": "Removes installed tool versions from mise.toml",
+            "options": [
+                {
+                    "name": [
+                        "--no-prune"
+                    ],
+                    "description": "Do not also prune the installed version",
+                    "isRepeatable": false
+                },
+                {
+                    "name": [
+                        "--global"
+                    ],
+                    "description": "Remove tool from global config",
+                    "isRepeatable": false
+                }
+            ],
+            "args": [
+                {
+                    "name": "installed_tool@version",
+                    "description": "Tool(s) to remove",
+                    "isOptional": false,
+                    "isVariadic": true,
+                    "generators": installedToolVersionGenerator
                 }
             ]
         },
@@ -3667,11 +4014,14 @@ const completionSpec: Fig.Spec = {
         },
         {
             "name": [
-                "-q",
-                "--quiet"
+                "--output"
             ],
-            "description": "Suppress non-error messages",
-            "isRepeatable": false
+            "isRepeatable": false,
+            "args": {
+                "name": "output",
+                "isOptional": false,
+                "isVariadic": false
+            }
         },
         {
             "name": [
@@ -3682,11 +4032,10 @@ const completionSpec: Fig.Spec = {
         },
         {
             "name": [
-                "-v",
-                "--verbose"
+                "--no-config"
             ],
-            "description": "Show extra output (use -vv for even more)",
-            "isRepeatable": true
+            "description": "Do not load any config files",
+            "isRepeatable": false
         },
         {
             "name": [
@@ -3695,6 +4044,29 @@ const completionSpec: Fig.Spec = {
             ],
             "description": "Answer yes to all confirmation prompts",
             "isRepeatable": false
+        },
+        {
+            "name": [
+                "-q",
+                "--quiet"
+            ],
+            "description": "Suppress non-error messages",
+            "isRepeatable": false
+        },
+        {
+            "name": [
+                "--silent"
+            ],
+            "description": "Suppress all task output and mise non-error messages",
+            "isRepeatable": false
+        },
+        {
+            "name": [
+                "-v",
+                "--verbose"
+            ],
+            "description": "Show extra output (use -vv for even more)",
+            "isRepeatable": true
         }
     ],
     "args": [

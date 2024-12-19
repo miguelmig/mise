@@ -1,7 +1,3 @@
-use std::collections::{BTreeMap, HashMap};
-use std::fmt::{Debug, Formatter};
-use std::path::{Path, PathBuf};
-
 use eyre::{eyre, WrapErr};
 use indexmap::IndexMap;
 use itertools::Itertools;
@@ -9,18 +5,23 @@ use once_cell::sync::OnceCell;
 use serde::de::Visitor;
 use serde::{de, Deserializer};
 use serde_derive::Deserialize;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::{Debug, Display, Formatter};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tera::Context as TeraContext;
 use toml_edit::{table, value, Array, DocumentMut, InlineTable, Item, Key, Value};
 use versions::Versioning;
 
 use crate::cli::args::{BackendArg, ToolVersionType};
-use crate::config::config_file::toml::{deserialize_arr, deserialize_path_entry_arr};
+use crate::config::config_file::toml::deserialize_arr;
 use crate::config::config_file::{config_trust_root, trust, trust_check, ConfigFile, TaskConfig};
-use crate::config::env_directive::{EnvDirective, PathEntry};
+use crate::config::env_directive::{EnvDirective, EnvDirectiveOptions};
 use crate::config::settings::SettingsPartial;
 use crate::config::{Alias, AliasMap};
 use crate::file::{create_dir_all, display_path};
 use crate::hooks::{Hook, Hooks};
+use crate::redactions::Redactions;
 use crate::registry::REGISTRY;
 use crate::task::Task;
 use crate::tera::{get_tera, BASE_CONTEXT};
@@ -39,11 +40,11 @@ pub struct MiseToml {
     #[serde(skip)]
     path: PathBuf,
     #[serde(default, alias = "dotenv", deserialize_with = "deserialize_arr")]
-    env_file: Vec<PathBuf>,
+    env_file: Vec<String>,
     #[serde(default)]
     env: EnvList,
     #[serde(default, deserialize_with = "deserialize_arr")]
-    env_path: Vec<PathEntry>,
+    env_path: Vec<String>,
     #[serde(default)]
     alias: AliasMap,
     #[serde(skip)]
@@ -55,13 +56,15 @@ pub struct MiseToml {
     #[serde(default)]
     plugins: HashMap<String, String>,
     #[serde(default)]
+    redactions: Redactions,
+    #[serde(default)]
     task_config: TaskConfig,
     #[serde(default)]
     tasks: Tasks,
     #[serde(default)]
     watch_files: Vec<WatchFile>,
     #[serde(default)]
-    vars: IndexMap<String, String>,
+    vars: EnvList,
     #[serde(default)]
     settings: SettingsPartial,
 }
@@ -72,8 +75,13 @@ pub struct MiseTomlToolList(Vec<MiseTomlTool>);
 #[derive(Debug, Clone)]
 pub struct MiseTomlTool {
     pub tt: ToolVersionType,
-    pub os: Option<Vec<String>>,
     pub options: Option<ToolVersionOptions>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MiseTomlEnvDirective {
+    pub value: String,
+    pub options: EnvDirectiveOptions,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -187,14 +195,23 @@ impl MiseToml {
     }
 
     pub fn update_env<V: Into<Value>>(&mut self, key: &str, value: V) -> eyre::Result<()> {
-        let env_tbl = self
+        let mut env_tbl = self
             .doc_mut()?
             .entry("env")
             .or_insert_with(table)
             .as_table_mut()
             .unwrap();
-        let key = get_key_with_decor(env_tbl, key);
-        env_tbl.insert_formatted(&key, toml_edit::value(value));
+        let key_parts = key.split('.').collect_vec();
+        for (i, k) in key_parts.iter().enumerate() {
+            if i == key_parts.len() - 1 {
+                let k = get_key_with_decor(env_tbl, k);
+                env_tbl.insert_formatted(&k, toml_edit::value(value));
+                break;
+            } else if !env_tbl.contains_key(k) {
+                env_tbl.insert_formatted(&Key::from(*k), toml_edit::table());
+            }
+            env_tbl = env_tbl.get_mut(k).unwrap().as_table_mut().unwrap();
+        }
         Ok(())
     }
 
@@ -266,12 +283,12 @@ impl ConfigFile for MiseToml {
         let path_entries = self
             .env_path
             .iter()
-            .map(|p| EnvDirective::Path(p.clone()))
+            .map(|p| EnvDirective::Path(p.clone(), Default::default()))
             .collect_vec();
         let env_files = self
             .env_file
             .iter()
-            .map(|p| EnvDirective::File(p.clone()))
+            .map(|p| EnvDirective::File(p.clone(), Default::default()))
             .collect_vec();
         let all = path_entries
             .into_iter()
@@ -281,11 +298,15 @@ impl ConfigFile for MiseToml {
         Ok(all)
     }
 
+    fn vars_entries(&self) -> eyre::Result<Vec<EnvDirective>> {
+        Ok(self.vars.0.clone())
+    }
+
     fn tasks(&self) -> Vec<&Task> {
         self.tasks.0.values().collect()
     }
 
-    fn remove_plugin(&mut self, fa: &BackendArg) -> eyre::Result<()> {
+    fn remove_tool(&mut self, fa: &BackendArg) -> eyre::Result<()> {
         self.tools.shift_remove(fa);
         let doc = self.doc_mut()?;
         if let Some(tools) = doc.get_mut("tools") {
@@ -307,6 +328,9 @@ impl ConfigFile for MiseToml {
         let is_tools_sorted = is_tools_sorted(&self.tools); // was it previously sorted (if so we'll keep it sorted)
         let existing = self.tools.entry(ba.clone()).or_default();
         let output_empty_opts = |opts: &ToolVersionOptions| {
+            if opts.os.is_some() || !opts.install_env.is_empty() {
+                return false;
+            }
             if let Some(reg_ba) = REGISTRY.get(ba.short.as_str()).and_then(|b| b.ba()) {
                 if reg_ba.opts.as_ref().is_some_and(|o| o == opts) {
                     // in this case the options specified are the same as in the registry so output no options and rely on the defaults
@@ -335,13 +359,28 @@ impl ConfigFile for MiseToml {
         }
 
         if versions.len() == 1 {
-            if output_empty_opts(&versions[0].options()) {
+            let options = versions[0].options();
+            if output_empty_opts(&options) {
                 tools.insert_formatted(&key, value(versions[0].version()));
             } else {
                 let mut table = InlineTable::new();
                 table.insert("version", versions[0].version().into());
-                for (k, v) in versions[0].options() {
+                for (k, v) in options.opts {
                     table.insert(k, v.into());
+                }
+                if let Some(os) = options.os {
+                    let mut arr = Array::new();
+                    for o in os {
+                        arr.push(Value::from(o));
+                    }
+                    table.insert("os", Value::Array(arr));
+                }
+                if !options.install_env.is_empty() {
+                    let mut env = InlineTable::new();
+                    for (k, v) in options.install_env {
+                        env.insert(k, v.into());
+                    }
+                    table.insert("install_env", env.into());
                 }
                 tools.insert_formatted(&key, table.into());
             }
@@ -354,7 +393,7 @@ impl ConfigFile for MiseToml {
                 } else {
                     let mut table = InlineTable::new();
                     table.insert("version", v.to_string().into());
-                    for (k, v) in tr.options() {
+                    for (k, v) in tr.options().opts {
                         table.insert(k, v.clone().into());
                     }
                     arr.push(table);
@@ -394,15 +433,14 @@ impl ConfigFile for MiseToml {
         for (ba, tvp) in &self.tools {
             for tool in &tvp.0 {
                 let version = self.parse_template(&tool.tt.to_string())?;
-                let mut tvr = if let Some(mut options) = tool.options.clone() {
-                    for v in options.values_mut() {
+                let tvr = if let Some(mut options) = tool.options.clone() {
+                    for v in options.opts.values_mut() {
                         *v = self.parse_template(v)?;
                     }
                     ToolRequest::new_opts(ba.clone(), &version, options, source.clone())?
                 } else {
                     ToolRequest::new(ba.clone(), &version, source.clone())?
                 };
-                tvr = tvr.with_os(tool.os.clone());
                 trs.add_version(tvr, &source);
             }
         }
@@ -438,6 +476,10 @@ impl ConfigFile for MiseToml {
         &self.task_config
     }
 
+    fn redactions(&self) -> &Redactions {
+        &self.redactions
+    }
+
     fn watch_files(&self) -> eyre::Result<Vec<WatchFile>> {
         self.watch_files
             .iter()
@@ -469,10 +511,6 @@ impl ConfigFile for MiseToml {
             .into_iter()
             .flatten()
             .collect())
-    }
-
-    fn vars(&self) -> eyre::Result<&IndexMap<String, String>> {
-        Ok(&self.vars)
     }
 }
 
@@ -534,6 +572,7 @@ impl Clone for MiseToml {
             doc: self.doc.clone(),
             hooks: self.hooks.clone(),
             tools: self.tools.clone(),
+            redactions: self.redactions.clone(),
             plugins: self.plugins.clone(),
             tasks: self.tasks.clone(),
             task_config: self.task_config.clone(),
@@ -549,13 +588,11 @@ impl From<ToolRequest> for MiseTomlTool {
         match tr {
             ToolRequest::Version {
                 version,
-                os,
                 options,
                 backend: _backend,
                 source: _source,
             } => Self {
                 tt: ToolVersionType::Version(version),
-                os,
                 options: if options.is_empty() {
                     None
                 } else {
@@ -564,13 +601,11 @@ impl From<ToolRequest> for MiseTomlTool {
             },
             ToolRequest::Path {
                 path,
-                os,
                 options,
                 backend: _backend,
                 source: _source,
             } => Self {
                 tt: ToolVersionType::Path(path),
-                os,
                 options: if options.is_empty() {
                     None
                 } else {
@@ -579,13 +614,11 @@ impl From<ToolRequest> for MiseTomlTool {
             },
             ToolRequest::Prefix {
                 prefix,
-                os,
                 options,
                 backend: _backend,
                 source: _source,
             } => Self {
                 tt: ToolVersionType::Prefix(prefix),
-                os,
                 options: if options.is_empty() {
                     None
                 } else {
@@ -595,13 +628,11 @@ impl From<ToolRequest> for MiseTomlTool {
             ToolRequest::Ref {
                 ref_,
                 ref_type,
-                os,
                 options,
                 backend: _backend,
                 source: _source,
             } => Self {
                 tt: ToolVersionType::Ref(ref_, ref_type),
-                os,
                 options: if options.is_empty() {
                     None
                 } else {
@@ -610,14 +641,12 @@ impl From<ToolRequest> for MiseTomlTool {
             },
             ToolRequest::Sub {
                 sub,
-                os,
                 options,
                 orig_version,
                 backend: _backend,
                 source: _source,
             } => Self {
                 tt: ToolVersionType::Sub { sub, orig_version },
-                os,
                 options: if options.is_empty() {
                     None
                 } else {
@@ -625,13 +654,11 @@ impl From<ToolRequest> for MiseTomlTool {
                 },
             },
             ToolRequest::System {
-                os,
                 options,
                 backend: _backend,
                 source: _source,
             } => Self {
                 tt: ToolVersionType::System,
-                os,
                 options: if options.is_empty() {
                     None
                 } else {
@@ -690,7 +717,7 @@ impl<'de> de::Deserialize<'de> for EnvList {
                     match key.as_str() {
                         "_" | "mise" => {
                             struct EnvDirectivePythonVenv {
-                                path: PathBuf,
+                                path: String,
                                 create: bool,
                                 python: Option<String>,
                                 uv_create_args: Option<Vec<String>>,
@@ -706,12 +733,12 @@ impl<'de> de::Deserialize<'de> for EnvList {
 
                             #[derive(Deserialize)]
                             struct EnvDirectives {
-                                #[serde(default, deserialize_with = "deserialize_path_entry_arr")]
-                                path: Vec<PathEntry>,
                                 #[serde(default, deserialize_with = "deserialize_arr")]
-                                file: Vec<PathBuf>,
+                                path: Vec<MiseTomlEnvDirective>,
                                 #[serde(default, deserialize_with = "deserialize_arr")]
-                                source: Vec<PathBuf>,
+                                file: Vec<MiseTomlEnvDirective>,
+                                #[serde(default, deserialize_with = "deserialize_arr")]
+                                source: Vec<MiseTomlEnvDirective>,
                                 #[serde(default)]
                                 python: EnvDirectivePython,
                                 #[serde(flatten)]
@@ -809,17 +836,17 @@ impl<'de> de::Deserialize<'de> for EnvList {
 
                             let directives = map.next_value::<EnvDirectives>()?;
                             // TODO: parse these in the order they're defined somehow
-                            for path in directives.path {
-                                env.push(EnvDirective::Path(path));
+                            for d in directives.path {
+                                env.push(EnvDirective::Path(d.value, d.options));
                             }
-                            for file in directives.file {
-                                env.push(EnvDirective::File(file));
+                            for d in directives.file {
+                                env.push(EnvDirective::File(d.value, d.options));
                             }
-                            for source in directives.source {
-                                env.push(EnvDirective::Source(source));
+                            for d in directives.source {
+                                env.push(EnvDirective::Source(d.value, d.options));
                             }
                             for (key, value) in directives.other {
-                                env.push(EnvDirective::Module(key, value));
+                                env.push(EnvDirective::Module(key, value, Default::default()));
                             }
                             if let Some(venv) = directives.python.venv {
                                 env.push(EnvDirective::PythonVenv {
@@ -828,6 +855,10 @@ impl<'de> de::Deserialize<'de> for EnvList {
                                     python: venv.python,
                                     uv_create_args: venv.uv_create_args,
                                     python_create_args: venv.python_create_args,
+                                    options: EnvDirectiveOptions {
+                                        tools: true,
+                                        redact: false,
+                                    },
                                 });
                             }
                         }
@@ -836,18 +867,44 @@ impl<'de> de::Deserialize<'de> for EnvList {
                                 Int(i64),
                                 Str(String),
                                 Bool(bool),
+                                Map {
+                                    value: Box<Val>,
+                                    tools: bool,
+                                    redact: bool,
+                                },
+                            }
+                            impl Display for Val {
+                                fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+                                    match self {
+                                        Val::Int(i) => write!(f, "{}", i),
+                                        Val::Str(s) => write!(f, "{}", s),
+                                        Val::Bool(b) => write!(f, "{}", b),
+                                        Val::Map {
+                                            value,
+                                            tools,
+                                            redact,
+                                        } => {
+                                            write!(f, "{}", value)?;
+                                            if *tools {
+                                                write!(f, " tools")?;
+                                            }
+                                            if *redact {
+                                                write!(f, " redact")?;
+                                            }
+                                            Ok(())
+                                        }
+                                    }
+                                }
                             }
 
                             impl<'de> de::Deserialize<'de> for Val {
-                                fn deserialize<D>(
-                                    deserializer: D,
-                                ) -> std::result::Result<Self, D::Error>
+                                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
                                 where
-                                    D: de::Deserializer<'de>,
+                                    D: Deserializer<'de>,
                                 {
                                     struct ValVisitor;
 
-                                    impl Visitor<'_> for ValVisitor {
+                                    impl<'de> Visitor<'de> for ValVisitor {
                                         type Value = Val;
                                         fn expecting(
                                             &self,
@@ -861,12 +918,7 @@ impl<'de> de::Deserialize<'de> for EnvList {
                                         where
                                             E: de::Error,
                                         {
-                                            match v {
-                                                true => Err(de::Error::custom(
-                                                    "env values cannot be true",
-                                                )),
-                                                false => Ok(Val::Bool(v)),
-                                            }
+                                            Ok(Val::Bool(v))
                                         }
 
                                         fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
@@ -882,6 +934,59 @@ impl<'de> de::Deserialize<'de> for EnvList {
                                         {
                                             Ok(Val::Str(v.to_string()))
                                         }
+
+                                        fn visit_map<A>(
+                                            self,
+                                            mut map: A,
+                                        ) -> Result<Self::Value, A::Error>
+                                        where
+                                            A: de::MapAccess<'de>,
+                                        {
+                                            let mut value: Option<Val> = None;
+                                            let mut tools = None;
+                                            let mut redact = None;
+                                            while let Some((key, val)) =
+                                                map.next_entry::<String, Val>()?
+                                            {
+                                                match key.as_str() {
+                                                    "value" => {
+                                                        value = Some(val);
+                                                    }
+                                                    "tools" => {
+                                                        tools = Some(val);
+                                                    }
+                                                    "redact" => {
+                                                        redact = Some(val);
+                                                    }
+                                                    _ => {
+                                                        return Err(de::Error::unknown_field(
+                                                            &key,
+                                                            &["value", "tools", "redact"],
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            let value = value
+                                                .ok_or_else(|| de::Error::missing_field("value"))?;
+                                            let tools = if let Some(Val::Bool(tools)) = tools {
+                                                tools
+                                            } else {
+                                                false
+                                            };
+                                            Ok(Val::Map {
+                                                value: Box::new(value),
+                                                tools,
+                                                redact: redact
+                                                    .map(|r| {
+                                                        if let Val::Bool(b) = r {
+                                                            b
+                                                        } else {
+                                                            false
+                                                        }
+                                                    })
+                                                    .unwrap_or_default(),
+                                            })
+                                        }
                                     }
 
                                     deserializer.deserialize_any(ValVisitor)
@@ -891,12 +996,31 @@ impl<'de> de::Deserialize<'de> for EnvList {
                             let value = map.next_value::<Val>()?;
                             match value {
                                 Val::Int(i) => {
-                                    env.push(EnvDirective::Val(key, i.to_string()));
+                                    env.push(EnvDirective::Val(
+                                        key,
+                                        i.to_string(),
+                                        Default::default(),
+                                    ));
                                 }
                                 Val::Str(s) => {
-                                    env.push(EnvDirective::Val(key, s));
+                                    env.push(EnvDirective::Val(key, s, Default::default()));
                                 }
-                                Val::Bool(_b) => env.push(EnvDirective::Rm(key)),
+                                Val::Bool(true) => env.push(EnvDirective::Val(
+                                    key,
+                                    "true".into(),
+                                    Default::default(),
+                                )),
+                                Val::Bool(false) => {
+                                    env.push(EnvDirective::Rm(key, Default::default()))
+                                }
+                                Val::Map {
+                                    value,
+                                    tools,
+                                    redact,
+                                } => {
+                                    let opts = EnvDirectiveOptions { tools, redact };
+                                    env.push(EnvDirective::Val(key, value.to_string(), opts));
+                                }
                             }
                         }
                     }
@@ -929,11 +1053,7 @@ impl<'de> de::Deserialize<'de> for MiseTomlToolList {
                 let tt: ToolVersionType = v
                     .parse()
                     .map_err(|e| de::Error::custom(format!("invalid tool: {e}")))?;
-                Ok(MiseTomlToolList(vec![MiseTomlTool {
-                    tt,
-                    os: None,
-                    options: None,
-                }]))
+                Ok(MiseTomlToolList(vec![MiseTomlTool { tt, options: None }]))
             }
 
             fn visit_seq<S>(self, mut seq: S) -> std::result::Result<Self::Value, S::Error>
@@ -951,8 +1071,7 @@ impl<'de> de::Deserialize<'de> for MiseTomlToolList {
             where
                 M: de::MapAccess<'de>,
             {
-                let mut options: BTreeMap<String, String> = Default::default();
-                let mut os: Option<Vec<String>> = None;
+                let mut options: ToolVersionOptions = Default::default();
                 let mut tt: Option<ToolVersionType> = None;
                 while let Some((k, v)) = map.next_entry::<String, toml::Value>()? {
                     match k.as_str() {
@@ -968,26 +1087,49 @@ impl<'de> de::Deserialize<'de> for MiseTomlToolList {
                         }
                         "os" => match v {
                             toml::Value::Array(s) => {
-                                os = Some(
+                                options.os = Some(
                                     s.iter().map(|v| v.as_str().unwrap().to_string()).collect(),
                                 );
                             }
                             toml::Value::String(s) => {
-                                options.insert(k, s);
+                                options.opts.insert(k, s);
                             }
                             _ => {
                                 return Err(de::Error::custom("os must be a string or array"));
                             }
                         },
+                        "install_env" => match v {
+                            toml::Value::Table(env) => {
+                                for (k, v) in env {
+                                    match v {
+                                        toml::Value::Boolean(v) => {
+                                            options.install_env.insert(k, v.to_string());
+                                        }
+                                        toml::Value::Integer(v) => {
+                                            options.install_env.insert(k, v.to_string());
+                                        }
+                                        toml::Value::String(v) => {
+                                            options.install_env.insert(k, v);
+                                        }
+                                        _ => {
+                                            return Err(de::Error::custom("invalid value type"));
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(de::Error::custom("env must be a table"));
+                            }
+                        },
                         _ => match v {
                             toml::Value::Boolean(v) => {
-                                options.insert(k, v.to_string());
+                                options.opts.insert(k, v.to_string());
                             }
                             toml::Value::Integer(v) => {
-                                options.insert(k, v.to_string());
+                                options.opts.insert(k, v.to_string());
                             }
                             toml::Value::String(v) => {
-                                options.insert(k, v);
+                                options.opts.insert(k, v);
                             }
                             _ => {
                                 return Err(de::Error::custom("invalid value type"));
@@ -998,7 +1140,6 @@ impl<'de> de::Deserialize<'de> for MiseTomlToolList {
                 if let Some(tt) = tt {
                     Ok(MiseTomlToolList(vec![MiseTomlTool {
                         tt,
-                        os,
                         options: Some(options),
                     }]))
                 } else {
@@ -1008,6 +1149,74 @@ impl<'de> de::Deserialize<'de> for MiseTomlToolList {
         }
 
         deserializer.deserialize_any(MiseTomlToolListVisitor)
+    }
+}
+
+impl FromStr for MiseTomlEnvDirective {
+    type Err = eyre::Report;
+
+    fn from_str(s: &str) -> eyre::Result<Self> {
+        Ok(MiseTomlEnvDirective {
+            value: s.into(),
+            options: Default::default(),
+        })
+    }
+}
+
+impl<'de> de::Deserialize<'de> for MiseTomlEnvDirective {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        struct MiseTomlEnvDirectiveVisitor;
+
+        impl<'de> Visitor<'de> for MiseTomlEnvDirectiveVisitor {
+            type Value = MiseTomlEnvDirective;
+            fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+                formatter.write_str("env directive")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(MiseTomlEnvDirective {
+                    value: v.into(),
+                    options: Default::default(),
+                })
+            }
+
+            fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let mut options: EnvDirectiveOptions = Default::default();
+                let mut value = None;
+                while let Some((k, v)) = map.next_entry::<String, toml::Value>()? {
+                    match k.as_str() {
+                        "value" | "path" => {
+                            value = Some(v.as_str().unwrap().to_string());
+                        }
+                        "tools" => {
+                            options.tools = v.as_bool().unwrap();
+                        }
+                        "redact" => {
+                            options.redact = v.as_bool().unwrap();
+                        }
+                        _ => {
+                            return Err(de::Error::custom("invalid key"));
+                        }
+                    }
+                }
+                if let Some(value) = value {
+                    Ok(MiseTomlEnvDirective { value, options })
+                } else {
+                    Err(de::Error::custom("missing value"))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(MiseTomlEnvDirectiveVisitor)
     }
 }
 
@@ -1031,19 +1240,14 @@ impl<'de> de::Deserialize<'de> for MiseTomlTool {
                 let tt: ToolVersionType = v
                     .parse()
                     .map_err(|e| de::Error::custom(format!("invalid tool: {e}")))?;
-                Ok(MiseTomlTool {
-                    tt,
-                    os: None,
-                    options: None,
-                })
+                Ok(MiseTomlTool { tt, options: None })
             }
 
             fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
             where
                 M: de::MapAccess<'de>,
             {
-                let mut options: BTreeMap<String, String> = Default::default();
-                let mut os: Option<Vec<String>> = None;
+                let mut options: ToolVersionOptions = Default::default();
                 let mut tt = ToolVersionType::System;
                 while let Some((k, v)) = map.next_entry::<String, toml::Value>()? {
                     match k.as_str() {
@@ -1057,25 +1261,47 @@ impl<'de> de::Deserialize<'de> for MiseTomlTool {
                         }
                         "os" => match v {
                             toml::Value::Array(s) => {
-                                os = Some(
+                                options.os = Some(
                                     s.iter().map(|v| v.as_str().unwrap().to_string()).collect(),
                                 );
                             }
                             toml::Value::String(s) => {
-                                options.insert(k, s);
+                                options.opts.insert(k, s);
                             }
                             _ => {
                                 return Err(de::Error::custom("os must be a string or array"));
                             }
                         },
+                        "install_env" => match v {
+                            toml::Value::Table(env) => {
+                                for (k, v) in env {
+                                    match v {
+                                        toml::Value::Boolean(v) => {
+                                            options.install_env.insert(k, v.to_string());
+                                        }
+                                        toml::Value::Integer(v) => {
+                                            options.install_env.insert(k, v.to_string());
+                                        }
+                                        toml::Value::String(v) => {
+                                            options.install_env.insert(k, v);
+                                        }
+                                        _ => {
+                                            return Err(de::Error::custom("invalid value type"));
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(de::Error::custom("env must be a table"));
+                            }
+                        },
                         _ => {
-                            options.insert(k, v.as_str().unwrap().to_string());
+                            options.opts.insert(k, v.as_str().unwrap().to_string());
                         }
                     }
                 }
                 Ok(MiseTomlTool {
                     tt,
-                    os,
                     options: Some(options),
                 })
             }
@@ -1518,7 +1744,7 @@ mod tests {
         )
         .unwrap();
         let mut cf = MiseToml::from_file(&p).unwrap();
-        cf.remove_plugin(&"node".into()).unwrap();
+        cf.remove_tool(&"node".into()).unwrap();
 
         assert_debug_snapshot!(cf.to_toolset().unwrap());
         let cf: Box<dyn ConfigFile> = Box::new(cf);

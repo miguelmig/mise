@@ -1,8 +1,8 @@
 # Environments
 
 > Like [direnv](https://github.com/direnv/direnv) it
-manages *environment variables* for
-different project directories.
+> manages _environment variables_ for
+> different project directories.
 
 Use mise to specify environment variables used for different projects. Create a `mise.toml` file
 in the root of your project directory:
@@ -31,6 +31,28 @@ NODE_ENV  development  mise.toml
 $ mise unset NODE_ENV
 ```
 
+## Lazy eval
+
+Environment variables typically are resolved before tools—that way you can configure tool installation
+with environment variables. However, sometimes you want to access environment variables produced by
+tools. To do that, turn the value into a map with `tools = true`:
+
+```toml
+[env]
+MY_VAR = { value = "tools path: {{env.PATH}}", tools = true }
+_.path = { path = ["{{env.GEM_HOME}}/bin"], tools = true } # directives may also set tools = true
+```
+
+## Redactions
+
+Variables can be redacted from the output by setting `redact = true`:
+
+```toml
+[env]
+SECRET = { value = "my_secret", redact = true }
+_.file = { path = [".env.json"], tools = true } # directives may also set redact = true
+```
+
 ## `env._` directives
 
 `env._.*` define special behavior for setting environment variables. (e.g.: reading env vars
@@ -56,6 +78,15 @@ not to mise since there is not much mise can do about the way that crate works.
 
 Or set [`MISE_ENV_FILE=.env`](/configuration#mise-env-file) to automatically load dotenv files in any
 directory.
+
+You can also use json or yaml files:
+
+```toml
+[env]
+_.file = '.env.json'
+```
+
+See [secrets](/environments/secrets) for ways to read encrypted files with `env._.file`.
 
 ### `env._.path`
 

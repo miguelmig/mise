@@ -6,9 +6,11 @@ use std::{panic, thread};
 
 use crate::backend::Backend;
 use crate::cli::args::BackendArg;
+use crate::config::env_directive::EnvResults;
 use crate::config::settings::{SettingsStatusMissingTools, SETTINGS};
 use crate::config::Config;
 use crate::env::{PATH_KEY, TERM_WIDTH};
+use crate::env_diff::EnvMap;
 use crate::errors::Error;
 use crate::hooks::Hooks;
 use crate::install_context::InstallContext;
@@ -39,18 +41,38 @@ mod tool_source;
 mod tool_version;
 mod tool_version_list;
 
-pub type ToolVersionOptions = BTreeMap<String, String>;
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ToolVersionOptions {
+    pub os: Option<Vec<String>>,
+    pub install_env: BTreeMap<String, String>,
+    #[serde(flatten)]
+    pub opts: BTreeMap<String, String>,
+}
+
+impl ToolVersionOptions {
+    pub fn is_empty(&self) -> bool {
+        self.install_env.is_empty() && self.opts.is_empty()
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.opts.get(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.opts.contains_key(key)
+    }
+}
 
 pub fn parse_tool_options(s: &str) -> ToolVersionOptions {
-    let mut opts = ToolVersionOptions::new();
+    let mut tvo = ToolVersionOptions::default();
     for opt in s.split(',') {
         let (k, v) = opt.split_once('=').unwrap_or((opt, ""));
         if k.is_empty() {
             continue;
         }
-        opts.insert(k.to_string(), v.to_string());
+        tvo.opts.insert(k.to_string(), v.to_string());
     }
-    opts
+    tvo
 }
 
 #[derive(Debug)]
@@ -208,7 +230,7 @@ impl Toolset {
         if versions.is_empty() {
             return Ok(vec![]);
         }
-        hooks::run_one_hook(self, Hooks::Preinstall);
+        hooks::run_one_hook(self, Hooks::Preinstall, None);
         self.init_request_options(&mut versions);
         show_python_install_hint(&versions);
         let mut installed = vec![];
@@ -248,7 +270,7 @@ impl Toolset {
                 }
             }
         }
-        hooks::run_one_hook(self, Hooks::Postinstall);
+        hooks::run_one_hook(self, Hooks::Postinstall, None);
         Ok(installed)
     }
 
@@ -386,7 +408,6 @@ impl Toolset {
                                 backend: p.ba().clone(),
                                 ref_: r.to_string(),
                                 ref_type: ref_type.to_string(),
-                                os: v.request.os().clone(),
                                 options: v.request.options().clone(),
                                 source: v.request.source().clone(),
                             };
@@ -439,18 +460,17 @@ impl Toolset {
             })
             .collect()
     }
-    pub fn full_env(&self) -> Result<BTreeMap<String, String>> {
-        let mut env = env::PRISTINE_ENV
-            .clone()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
+    /// returns env_with_path but also with the existing env vars from the system
+    pub fn full_env(&self) -> Result<EnvMap> {
+        let mut env = env::PRISTINE_ENV.clone().into_iter().collect::<EnvMap>();
         env.extend(self.env_with_path(&Config::get())?);
         Ok(env)
     }
-    pub fn env_with_path(&self, config: &Config) -> Result<BTreeMap<String, String>> {
-        let mut env = self.env(config)?;
+    /// the full mise environment including all tool paths
+    pub fn env_with_path(&self, config: &Config) -> Result<EnvMap> {
+        let (mut env, env_results) = self.final_env(config)?;
         let mut path_env = PathEnv::from_iter(env::PATH.clone());
-        for p in self.list_final_paths()? {
+        for p in self.list_final_paths(config, env_results)? {
             path_env.add(p);
         }
         env.insert(PATH_KEY.to_string(), path_env.to_string());
@@ -473,7 +493,7 @@ impl Toolset {
             .filter(|(_, k, _)| k.to_uppercase() != "PATH")
             .collect::<Vec<(String, String, String)>>()
     }
-    pub fn env(&self, config: &Config) -> Result<BTreeMap<String, String>> {
+    fn env(&self, config: &Config) -> Result<EnvMap> {
         time!("env start");
         let entries = self
             .env_from_tools(config)
@@ -485,7 +505,7 @@ impl Toolset {
             .filter(|(k, _)| k == "MISE_ADD_PATH" || k == "RTX_ADD_PATH")
             .map(|(_, v)| v)
             .join(":");
-        let mut entries: BTreeMap<String, String> = entries
+        let mut env: EnvMap = entries
             .into_iter()
             .filter(|(k, _)| k != "RTX_ADD_PATH")
             .filter(|(k, _)| k != "MISE_ADD_PATH")
@@ -494,16 +514,36 @@ impl Toolset {
             .rev()
             .collect();
         if !add_paths.is_empty() {
-            entries.insert(PATH_KEY.to_string(), add_paths);
+            env.insert(PATH_KEY.to_string(), add_paths);
         }
-        entries.extend(config.env()?.clone());
+        env.extend(config.env()?.clone());
         if let Some(venv) = &*UV_VENV {
             for (k, v) in &venv.env {
-                entries.insert(k.clone(), v.clone());
+                env.insert(k.clone(), v.clone());
             }
         }
         time!("env end");
-        Ok(entries)
+        Ok(env)
+    }
+    pub fn final_env(&self, config: &Config) -> Result<(EnvMap, EnvResults)> {
+        let mut env = self.env(config)?;
+        let mut tera_env = env::PRISTINE_ENV.clone().into_iter().collect::<EnvMap>();
+        tera_env.extend(env.clone());
+        let mut path_env = PathEnv::from_iter(env::PATH.clone());
+        for p in self.list_paths().into_iter() {
+            path_env.add(p);
+        }
+        tera_env.insert(PATH_KEY.to_string(), path_env.to_string());
+        let mut ctx = config.tera_ctx.clone();
+        ctx.insert("env", &tera_env);
+        let env_results = self.load_post_env(config, ctx, &tera_env)?;
+        env.extend(
+            env_results
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.0.clone())),
+        );
+        Ok((env, env_results))
     }
     pub fn list_paths(&self) -> Vec<PathBuf> {
         self.list_current_installed_versions()
@@ -519,29 +559,39 @@ impl Toolset {
             .collect()
     }
     /// same as list_paths but includes config.list_paths, venv paths, and MISE_ADD_PATHs from self.env()
-    pub fn list_final_paths(&self) -> Result<Vec<PathBuf>> {
+    pub fn list_final_paths(
+        &self,
+        config: &Config,
+        env_results: EnvResults,
+    ) -> Result<Vec<PathBuf>> {
         let mut paths = IndexSet::new();
-        for p in Config::get().path_dirs()?.clone() {
+        for p in config.path_dirs()?.clone() {
             paths.insert(p);
         }
         if let Some(venv) = &*UV_VENV {
             paths.insert(venv.venv_path.clone());
         }
-        if let Some(path) = self.env(&Config::get())?.get(&*PATH_KEY) {
+        if let Some(path) = self.env(config)?.get(&*PATH_KEY) {
             paths.insert(PathBuf::from(path));
         }
         for p in self.list_paths() {
             paths.insert(p);
         }
-        Ok(paths.into_iter().collect())
+        let mut path_env = PathEnv::from_iter(env::PATH.clone());
+        for p in paths.clone().into_iter() {
+            path_env.add(p);
+        }
+        // these are returned in order, but we need to run the post_env stuff last and then put the results in the front
+        let paths = env_results.env_paths.into_iter().chain(paths).collect();
+        Ok(paths)
     }
     pub fn which(&self, bin_name: &str) -> Option<(Arc<dyn Backend>, ToolVersion)> {
         self.list_current_installed_versions()
             .into_par_iter()
-            .find_first(|(p, tv)| {
-                if let Ok(x) = p.which(tv, bin_name) {
-                    x.is_some()
-                } else {
+            .find_first(|(p, tv)| match p.which(tv, bin_name) {
+                Ok(x) => x.is_some(),
+                Err(e) => {
+                    debug!("Error running which: {:#}", e);
                     false
                 }
             })
@@ -633,6 +683,34 @@ impl Toolset {
     fn is_disabled(&self, ba: &BackendArg) -> bool {
         !ba.is_os_supported() || SETTINGS.disable_tools().contains(&ba.short)
     }
+
+    fn load_post_env(
+        &self,
+        config: &Config,
+        ctx: tera::Context,
+        env: &EnvMap,
+    ) -> Result<EnvResults> {
+        let entries = config
+            .config_files
+            .iter()
+            .rev()
+            .map(|(source, cf)| {
+                cf.env_entries()
+                    .map(|ee| ee.into_iter().map(|e| (e, source.clone())))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        // trace!("load_env: entries: {:#?}", entries);
+        let env_results = EnvResults::resolve(ctx, env, entries, true)?;
+        if log::log_enabled!(log::Level::Trace) {
+            trace!("{env_results:#?}");
+        } else {
+            debug!("{env_results:?}");
+        }
+        Ok(env_results)
+    }
 }
 
 fn show_python_install_hint(versions: &[ToolRequest]) {
@@ -713,23 +791,29 @@ mod tests {
             let opts = super::parse_tool_options(input);
             assert_eq!(opts, f);
         };
-        t("", ToolVersionOptions::new());
+        t("", ToolVersionOptions::default());
         t(
             "exe=rg",
-            [("exe".to_string(), "rg".to_string())]
-                .iter()
-                .cloned()
-                .collect(),
+            ToolVersionOptions {
+                opts: [("exe".to_string(), "rg".to_string())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+                ..Default::default()
+            },
         );
         t(
             "exe=rg,match=musl",
-            [
-                ("exe".to_string(), "rg".to_string()),
-                ("match".to_string(), "musl".to_string()),
-            ]
-            .iter()
-            .cloned()
-            .collect(),
+            ToolVersionOptions {
+                opts: [
+                    ("exe".to_string(), "rg".to_string()),
+                    ("match".to_string(), "musl".to_string()),
+                ]
+                .iter()
+                .cloned()
+                .collect(),
+                ..Default::default()
+            },
         );
     }
 }

@@ -12,6 +12,7 @@ cargo-binstall = "1.10.15"
 "cargo:cargo-insta" = "latest"
 "cargo:cargo-show" = { version = "latest", os = ["linux", "macos"] }
 "cargo:git-cliff" = "latest"
+"cargo:toml-cli" = "latest"
 "cargo:usage-cli" = { version = "latest", os = ["linux", "macos"] }
 cosign = "latest"
 "jq" = "latest"
@@ -24,6 +25,7 @@ pre-commit = "latest"
 "shellcheck" = "0.10"
 "shfmt" = "3"
 slsa-verifier = "latest"
+taplo = "latest"
 wait-for-gh-rate-limit = "0.1.8"
 
 [task_config]

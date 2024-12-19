@@ -155,7 +155,13 @@ impl Settings {
         if !settings.color {
             console::set_colors_enabled(false);
             console::set_colors_enabled_stderr(false);
-        } else if ci_info::is_ci() && !cfg!(test) && *env::CLICOLOR != Some(false) {
+        } else if *env::CLICOLOR_FORCE == Some(true) {
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
+        } else if *env::CLICOLOR == Some(false) {
+            console::set_colors_enabled(false);
+            console::set_colors_enabled_stderr(false);
+        } else if ci_info::is_ci() && !cfg!(test) {
             console::set_colors_enabled_stderr(true);
         }
         if settings.ci {
@@ -198,7 +204,7 @@ impl Settings {
             self.cargo.binstall = cargo_binstall;
         }
         if let Some(pipx_uvx) = self.pipx_uvx {
-            self.pipx.uvx = pipx_uvx;
+            self.pipx.uvx = Some(pipx_uvx);
         }
         if let Some(python_compile) = self.python_compile {
             self.python.compile = Some(python_compile);
@@ -251,22 +257,22 @@ impl Settings {
         if cli.yes {
             s.yes = Some(true);
         }
-        if cli.quiet {
+        if cli.global_output_flags.quiet {
             s.quiet = Some(true);
         }
-        if cli.trace {
+        if cli.global_output_flags.trace {
             s.log_level = Some("trace".to_string());
         }
-        if cli.debug {
+        if cli.global_output_flags.debug {
             s.log_level = Some("debug".to_string());
         }
-        if let Some(log_level) = &cli.log_level {
+        if let Some(log_level) = &cli.global_output_flags.log_level {
             s.log_level = Some(log_level.to_string());
         }
-        if cli.verbose > 0 {
+        if cli.global_output_flags.verbose > 0 {
             s.verbose = Some(true);
         }
-        if cli.verbose > 1 {
+        if cli.global_output_flags.verbose > 1 {
             s.log_level = Some("trace".to_string());
         }
         Self::reset(Some(s));
@@ -420,6 +426,16 @@ impl Settings {
 
     pub fn arch(&self) -> &str {
         self.arch.as_deref().unwrap_or(ARCH)
+    }
+
+    pub fn no_config() -> bool {
+        *env::MISE_NO_CONFIG
+            || env::ARGS
+                .read()
+                .unwrap()
+                .iter()
+                .take_while(|a| *a != "--")
+                .any(|a| a == "--no-config")
     }
 }
 

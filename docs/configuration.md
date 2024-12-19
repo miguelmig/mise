@@ -91,7 +91,7 @@ See [Tools](/dev-tools/).
 
 ### `[env]` - Arbitrary Environment Variables
 
-See [environments](/environments).
+See [environments](/environments/).
 
 ### `[tasks.*]` - Run files or shell scripts
 
@@ -341,6 +341,12 @@ This is the directory where mise stores system-wide configuration.
 Default: `$MISE_CONFIG_DIR/config.toml` (Usually ~/.config/mise/config.toml)
 
 This is the path to the config file.
+
+### `MISE_GLOBAL_CONFIG_ROOT`
+
+Default: `$HOME`
+
+This is the path which is used as `{{config_root}}` for the global config file.
 
 ### `MISE_ENV_FILE`
 

@@ -10,7 +10,7 @@ use crate::backend::Backend;
 use crate::cache::{CacheManager, CacheManagerBuilder};
 use crate::cli::args::BackendArg;
 use crate::config::{Config, SETTINGS};
-use crate::env_diff::{EnvDiff, EnvDiffOperation};
+use crate::env_diff::{EnvDiff, EnvDiffOperation, EnvMap};
 use crate::hash::hash_to_str;
 use crate::install_context::InstallContext;
 use crate::plugins::asdf_plugin::AsdfPlugin;
@@ -136,14 +136,14 @@ impl AsdfBackend {
         };
         Ok(bin_paths)
     }
-    fn fetch_exec_env(&self, ts: &Toolset, tv: &ToolVersion) -> Result<BTreeMap<String, String>> {
+    fn fetch_exec_env(&self, ts: &Toolset, tv: &ToolVersion) -> Result<EnvMap> {
         let mut sm = self.script_man_for_tv(tv)?;
         for p in ts.list_paths() {
             sm.prepend_path(p);
         }
         let script = sm.get_script_path(&ExecEnv);
         let dir = dirs::CWD.clone().unwrap_or_default();
-        let ed = EnvDiff::from_bash_script(&script, &dir, &sm.env)?;
+        let ed = EnvDiff::from_bash_script(&script, &dir, &sm.env, Default::default())?;
         let env = ed
             .to_patches()
             .into_iter()
@@ -159,11 +159,14 @@ impl AsdfBackend {
     fn script_man_for_tv(&self, tv: &ToolVersion) -> Result<ScriptManager> {
         let config = Config::get();
         let mut sm = self.plugin.script_man.clone();
-        for (key, value) in &tv.request.options() {
+        for (key, value) in tv.request.options().opts {
             let k = format!("RTX_TOOL_OPTS__{}", key.to_uppercase());
             sm = sm.with_env(k, value.clone());
             let k = format!("MISE_TOOL_OPTS__{}", key.to_uppercase());
             sm = sm.with_env(k, value.clone());
+        }
+        for (key, value) in tv.request.options().install_env {
+            sm = sm.with_env(key, value.clone());
         }
         if let Some(project_root) = &config.project_root {
             let project_root = project_root.to_string_lossy().to_string();
@@ -358,12 +361,7 @@ impl Backend for AsdfBackend {
             .collect())
     }
 
-    fn exec_env(
-        &self,
-        config: &Config,
-        ts: &Toolset,
-        tv: &ToolVersion,
-    ) -> eyre::Result<BTreeMap<String, String>> {
+    fn exec_env(&self, config: &Config, ts: &Toolset, tv: &ToolVersion) -> eyre::Result<EnvMap> {
         if matches!(tv.request, ToolRequest::System { .. }) {
             return Ok(BTreeMap::new());
         }
