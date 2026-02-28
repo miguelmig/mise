@@ -109,12 +109,14 @@ impl Backend for VfoxBackend {
         if self.is_backend_plugin() {
             Settings::get().ensure_experimental("custom backends")?;
             let tool_name = self.get_tool_name()?;
+            let tool_opts = tv.request.options();
             vfox.backend_install(
                 &self.pathname,
                 tool_name,
                 &tv.version,
                 tv.install_path(),
                 tv.download_path(),
+                tool_opts.opts.clone(),
             )
             .await
             .wrap_err("Backend install method failed")?;
@@ -292,9 +294,15 @@ impl VfoxBackend {
                 // Use backend methods if the plugin supports them
                 let env_keys = if self.is_backend_plugin() {
                     let tool_name = self.get_tool_name()?;
-                    vfox.backend_exec_env(&self.pathname, tool_name, &tv.version, tv.install_path())
-                        .await
-                        .wrap_err("Backend exec env method failed")?
+                    vfox.backend_exec_env(
+                        &self.pathname,
+                        tool_name,
+                        &tv.version,
+                        tv.install_path(),
+                        opts.opts.clone(),
+                    )
+                    .await
+                    .wrap_err("Backend exec env method failed")?
                 } else {
                     vfox.env_keys(&self.pathname, &tv.version, &opts.opts)
                         .await?

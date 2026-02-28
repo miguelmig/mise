@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use itertools::Itertools;
 use reqwest::Url;
 use std::collections::BTreeMap;
@@ -262,6 +263,7 @@ impl Vfox {
         version: &str,
         install_path: PathBuf,
         download_path: PathBuf,
+        options: IndexMap<String, String>,
     ) -> Result<()> {
         let plugin = self.get_sdk(sdk)?;
         let ctx = BackendInstallContext {
@@ -269,6 +271,7 @@ impl Vfox {
             version: version.to_string(),
             install_path,
             download_path,
+            options,
         };
         plugin.backend_install(ctx).await?;
         Ok(())
@@ -280,12 +283,14 @@ impl Vfox {
         tool: &str,
         version: &str,
         install_path: PathBuf,
+        options: IndexMap<String, String>,
     ) -> Result<Vec<EnvKey>> {
         let plugin = self.get_sdk(sdk)?;
         let ctx = BackendExecEnvContext {
             tool: tool.to_string(),
             version: version.to_string(),
             install_path,
+            options,
         };
         plugin.backend_exec_env(ctx).await.map(|r| r.env_vars)
     }
