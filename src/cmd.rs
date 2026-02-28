@@ -598,10 +598,13 @@ impl<'a> CmdLineRunner<'a> {
             if !line.trim().is_empty() {
                 pr.set_message(line)
             }
-        } else if console::colors_enabled() {
-            println!("{line}\x1b[0m");
         } else {
-            println!("{line}");
+            let mut stdout = std::io::stdout().lock();
+            let _ = if console::colors_enabled() {
+                writeln!(stdout, "{line}\x1b[0m")
+            } else {
+                writeln!(stdout, "{line}")
+            };
         }
     }
 
@@ -621,11 +624,12 @@ impl<'a> CmdLineRunner<'a> {
                 }
             }
             None => {
-                if console::colors_enabled_stderr() {
-                    eprintln!("{line}\x1b[0m");
+                let mut stderr = std::io::stderr().lock();
+                let _ = if console::colors_enabled_stderr() {
+                    writeln!(stderr, "{line}\x1b[0m")
                 } else {
-                    eprintln!("{line}");
-                }
+                    writeln!(stderr, "{line}")
+                };
             }
         }
     }
