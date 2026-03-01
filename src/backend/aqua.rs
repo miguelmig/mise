@@ -6,7 +6,7 @@ use crate::backend::static_helpers::get_filename_from_url;
 use crate::cli::args::BackendArg;
 use crate::cli::version::{ARCH, OS};
 use crate::config::Settings;
-use crate::file::TarOptions;
+use crate::file::{TarFormat, TarOptions};
 use crate::http::HTTP;
 use crate::install_context::InstallContext;
 use crate::lockfile::PlatformInfo;
@@ -1396,10 +1396,8 @@ impl AquaBackend {
             .first()
             .expect("at least one bin path should exist");
         let tar_opts = TarOptions {
-            format: format.parse().unwrap_or_default(),
             pr: Some(ctx.pr.as_ref()),
-            strip_components: 0,
-            ..Default::default()
+            ..TarOptions::new(TarFormat::from_ext(format))
         };
         let mut make_executable = false;
         if let AquaPackageType::GithubArchive = pkg.r#type {
