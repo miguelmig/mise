@@ -101,6 +101,19 @@ pub trait PrepareProvider: Debug + Send + Sync {
     fn depends(&self) -> Vec<String> {
         self.base().config.depends.clone()
     }
+
+    /// Timeout duration for this provider's run command
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.base().config.timeout.as_deref().and_then(|t| {
+            match crate::duration::parse_duration(t) {
+                Ok(d) => Some(d),
+                Err(err) => {
+                    warn!("prepare: {}: invalid timeout {t:?}: {err}", self.id());
+                    None
+                }
+            }
+        })
+    }
 }
 
 /// Warn if any auto-enabled prepare providers are stale

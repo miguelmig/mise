@@ -107,6 +107,7 @@ struct PrepareJob {
     outputs: Vec<PathBuf>,
     touch: bool,
     depends: Vec<String>,
+    timeout: Option<std::time::Duration>,
 }
 
 impl PrepareResult {
@@ -384,6 +385,7 @@ impl PrepareEngine {
                 let outputs = provider.outputs();
                 let touch = provider.touch_outputs();
                 let depends = provider.depends();
+                let timeout = provider.timeout();
 
                 if opts.dry_run {
                     // Just record that it would run, let CLI handle output
@@ -395,6 +397,7 @@ impl PrepareEngine {
                         outputs,
                         touch,
                         depends,
+                        timeout,
                     });
                 }
             } else {
@@ -448,7 +451,7 @@ impl PrepareEngine {
 
         crate::parallel::parallel(to_run_with_context, |(job, mpr, toolset_env)| async move {
             let pr = mpr.add(&job.cmd.description);
-            match Self::execute_prepare_static(&job.cmd, &toolset_env) {
+            match Self::execute_prepare_static(&job.cmd, &toolset_env, job.timeout) {
                 Ok(()) => {
                     if job.touch {
                         Self::touch_outputs(&job.outputs);
@@ -598,7 +601,7 @@ impl PrepareEngine {
                         let pr = mpr.add(&job.cmd.description);
                         let id = job.id;
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            Self::execute_prepare_static(&job.cmd, &toolset_env)
+                            Self::execute_prepare_static(&job.cmd, &toolset_env, job.timeout)
                         }));
                         drop(permit);
 
@@ -786,6 +789,7 @@ impl PrepareEngine {
     fn execute_prepare_static(
         cmd: &super::PrepareCommand,
         toolset_env: &BTreeMap<String, String>,
+        timeout: Option<std::time::Duration>,
     ) -> Result<()> {
         let cwd = match cmd.cwd.clone() {
             Some(dir) => dir,
@@ -795,6 +799,11 @@ impl PrepareEngine {
         let mut runner = CmdLineRunner::new(&cmd.program)
             .args(&cmd.args)
             .current_dir(cwd);
+
+        // Apply timeout if configured
+        if let Some(timeout) = timeout {
+            runner = runner.with_timeout(timeout);
+        }
 
         // Apply toolset environment (includes PATH with installed tools)
         for (k, v) in toolset_env {
