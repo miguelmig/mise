@@ -1,18 +1,23 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use eyre::Result;
 use filetime::FileTime;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::cmd::CmdLineRunner;
 use crate::config::config_file::ConfigFile;
 use crate::config::{Config, Settings};
-use crate::parallel;
 use crate::ui::multi_progress_report::MultiProgressReport;
 
+type StepOutput = (PrepareStepResult, Vec<PathBuf>);
+type JobOutput = Result<(String, PrepareStepResult, Vec<PathBuf>), (String, eyre::Report)>;
+
 use super::PrepareProvider;
+use super::prepare_deps::PrepareDeps;
 use super::providers::{
     BunPrepareProvider, BundlerPrepareProvider, ComposerPrepareProvider, CustomPrepareProvider,
     GitSubmodulePrepareProvider, GoPrepareProvider, NpmPrepareProvider, PipPrepareProvider,
@@ -85,6 +90,8 @@ pub enum PrepareStepResult {
     Fresh(String),
     /// Step was skipped by user request
     Skipped(String),
+    /// Step failed
+    Failed(String),
 }
 
 /// Result of running all prepare steps
@@ -99,6 +106,7 @@ struct PrepareJob {
     cmd: super::PrepareCommand,
     outputs: Vec<PathBuf>,
     touch: bool,
+    depends: Vec<String>,
 }
 
 impl PrepareResult {
@@ -312,12 +320,14 @@ impl PrepareEngine {
             .collect()
     }
 
-    /// Run all stale prepare steps in parallel
+    /// Run all stale prepare steps, respecting dependency ordering
     pub async fn run(&self, opts: PrepareOptions) -> Result<PrepareResult> {
         let mut results = vec![];
 
         // Collect providers that need to run
         let mut to_run: Vec<PrepareJob> = vec![];
+        // Track IDs of providers that are fresh/skipped (treated as already satisfied for deps)
+        let mut satisfied_ids: HashSet<String> = HashSet::new();
 
         for provider in &self.providers {
             let id = provider.id().to_string();
@@ -325,13 +335,15 @@ impl PrepareEngine {
             // Check auto_only filter
             if opts.auto_only && !provider.is_auto() {
                 trace!("prepare step {} is not auto, skipping", id);
-                results.push(PrepareStepResult::Skipped(id));
+                results.push(PrepareStepResult::Skipped(id.clone()));
+                satisfied_ids.insert(id);
                 continue;
             }
 
             // Check skip list
             if opts.skip.contains(&id) {
-                results.push(PrepareStepResult::Skipped(id));
+                results.push(PrepareStepResult::Skipped(id.clone()));
+                satisfied_ids.insert(id);
                 continue;
             }
 
@@ -339,7 +351,8 @@ impl PrepareEngine {
             if let Some(ref only) = opts.only
                 && !only.contains(&id)
             {
-                results.push(PrepareStepResult::Skipped(id));
+                results.push(PrepareStepResult::Skipped(id.clone()));
+                satisfied_ids.insert(id);
                 continue;
             }
 
@@ -354,6 +367,7 @@ impl PrepareEngine {
                 let cmd = provider.prepare_command()?;
                 let outputs = provider.outputs();
                 let touch = provider.touch_outputs();
+                let depends = provider.depends();
 
                 if opts.dry_run {
                     // Just record that it would run, let CLI handle output
@@ -364,59 +378,280 @@ impl PrepareEngine {
                         cmd,
                         outputs,
                         touch,
+                        depends,
                     });
                 }
             } else {
                 trace!("prepare step {} is fresh, skipping", id);
-                results.push(PrepareStepResult::Fresh(id));
+                results.push(PrepareStepResult::Fresh(id.clone()));
+                satisfied_ids.insert(id);
             }
         }
 
-        // Run stale providers in parallel
+        // Run stale providers with dependency ordering
         if !to_run.is_empty() {
-            let mpr = MultiProgressReport::get();
-            let toolset_env = opts.env.clone();
+            let has_deps = to_run.iter().any(|j| !j.depends.is_empty());
 
-            // Include mpr/env in the tuple so closure doesn't capture anything
-            let to_run_with_context: Vec<_> = to_run
-                .into_iter()
-                .map(|job| (job, mpr.clone(), toolset_env.clone()))
-                .collect();
-
-            let run_results =
-                parallel::parallel(to_run_with_context, |(job, mpr, toolset_env)| async move {
-                    let pr = mpr.add(&job.cmd.description);
-                    match Self::execute_prepare_static(&job.cmd, &toolset_env) {
-                        Ok(()) => {
-                            if job.touch {
-                                Self::touch_outputs(&job.outputs);
-                            }
-                            pr.finish_with_message(format!("{} done", job.cmd.description));
-                            // Return outputs along with result so we can clear stale status
-                            // after ALL providers complete successfully
-                            Ok((PrepareStepResult::Ran(job.id), job.outputs))
-                        }
-                        Err(e) => {
-                            pr.finish_with_message(format!(
-                                "{} failed: {}",
-                                job.cmd.description, e
-                            ));
-                            Err(e)
-                        }
+            if has_deps {
+                let run_results = self
+                    .run_with_deps(to_run, &satisfied_ids, &opts.env)
+                    .await?;
+                for (step_result, outputs) in run_results {
+                    for output in &outputs {
+                        super::clear_output_stale(output);
                     }
-                })
-                .await?;
-
-            // All providers completed successfully - now clear stale status for all outputs
-            for (step_result, outputs) in run_results {
-                for output in &outputs {
-                    super::clear_output_stale(output);
+                    results.push(step_result);
                 }
-                results.push(step_result);
+            } else {
+                // No dependencies — use simple parallel execution
+                let run_results = self.run_parallel(to_run, &opts.env).await?;
+                for (step_result, outputs) in run_results {
+                    for output in &outputs {
+                        super::clear_output_stale(output);
+                    }
+                    results.push(step_result);
+                }
             }
         }
 
         Ok(PrepareResult { steps: results })
+    }
+
+    /// Simple parallel execution (no dependency ordering)
+    async fn run_parallel(
+        &self,
+        to_run: Vec<PrepareJob>,
+        toolset_env: &BTreeMap<String, String>,
+    ) -> Result<Vec<(PrepareStepResult, Vec<PathBuf>)>> {
+        let mpr = MultiProgressReport::get();
+
+        let to_run_with_context: Vec<_> = to_run
+            .into_iter()
+            .map(|job| (job, mpr.clone(), toolset_env.clone()))
+            .collect();
+
+        crate::parallel::parallel(to_run_with_context, |(job, mpr, toolset_env)| async move {
+            let pr = mpr.add(&job.cmd.description);
+            match Self::execute_prepare_static(&job.cmd, &toolset_env) {
+                Ok(()) => {
+                    if job.touch {
+                        Self::touch_outputs(&job.outputs);
+                    }
+                    pr.finish_with_message(format!("{} done", job.cmd.description));
+                    Ok((PrepareStepResult::Ran(job.id), job.outputs))
+                }
+                Err(e) => {
+                    pr.finish_with_message(format!("{} failed: {}", job.cmd.description, e));
+                    Err(e)
+                }
+            }
+        })
+        .await
+    }
+
+    /// Dependency-aware execution using Kahn's algorithm
+    async fn run_with_deps(
+        &self,
+        to_run: Vec<PrepareJob>,
+        satisfied_ids: &HashSet<String>,
+        toolset_env: &BTreeMap<String, String>,
+    ) -> Result<Vec<StepOutput>> {
+        let mpr = MultiProgressReport::get();
+        let mut results: Vec<StepOutput> = vec![];
+        let mut errors: Vec<(String, String)> = vec![];
+
+        // Build jobs map for lookup
+        let running_ids: HashSet<String> = to_run.iter().map(|j| j.id.clone()).collect();
+        let mut jobs: HashMap<String, PrepareJob> = HashMap::new();
+        let mut dep_specs: Vec<(String, Vec<String>)> = vec![];
+
+        for job in to_run {
+            // Filter depends to only those that are actually running (not fresh/skipped)
+            let filtered_deps: Vec<String> = job
+                .depends
+                .iter()
+                .filter(|dep| {
+                    if satisfied_ids.contains(*dep) {
+                        // Dependency is already satisfied (fresh/skipped)
+                        false
+                    } else if running_ids.contains(*dep) {
+                        // Dependency is in the run set — need to wait
+                        true
+                    } else {
+                        // Unknown dep — warn but don't block
+                        warn!(
+                            "prepare provider '{}' depends on '{}' which is not configured",
+                            job.id, dep
+                        );
+                        false
+                    }
+                })
+                .cloned()
+                .collect();
+
+            dep_specs.push((job.id.clone(), filtered_deps));
+            jobs.insert(job.id.clone(), job);
+        }
+
+        let mut deps = PrepareDeps::new(&dep_specs)?;
+
+        // Report blocked providers (cycles)
+        for blocked_id in deps.blocked_providers() {
+            warn!(
+                "prepare provider '{}' is blocked due to dependency cycle",
+                blocked_id
+            );
+            if let Some(job) = jobs.remove(&blocked_id) {
+                results.push((PrepareStepResult::Skipped(job.id), vec![]));
+            }
+        }
+
+        let mut rx = deps.subscribe();
+        let semaphore = Arc::new(Semaphore::new(Settings::get().jobs));
+        let mut join_set: JoinSet<JobOutput> = JoinSet::new();
+        // Track which tokio task ID maps to which provider ID for JoinError recovery
+        let mut inflight: HashMap<tokio::task::Id, String> = HashMap::new();
+
+        loop {
+            tokio::select! {
+                biased;
+
+                // Prioritize handling completed tasks
+                Some(join_result) = join_set.join_next() => {
+                    match join_result {
+                        Ok(Ok((id, step_result, outputs))) => {
+                            inflight.retain(|_, v| v != &id);
+                            results.push((step_result, outputs));
+                            deps.complete_success(&id);
+                        }
+                        Ok(Err((id, e))) => {
+                            inflight.retain(|_, v| v != &id);
+                            warn!("prepare provider '{}' failed: {}", id, e);
+                            errors.push((id.clone(), e.to_string()));
+                            results.push((PrepareStepResult::Failed(id.clone()), vec![]));
+                            deps.complete_failure(&id);
+                            for blocked_id in deps.blocked_providers() {
+                                if let Some(job) = jobs.remove(&blocked_id) {
+                                    warn!(
+                                        "prepare provider '{}' skipped due to failed dependency",
+                                        job.id
+                                    );
+                                    results.push((PrepareStepResult::Skipped(job.id), vec![]));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // JoinError — task panicked or was cancelled
+                            if let Some(id) = inflight.remove(&e.id()) {
+                                warn!("prepare provider '{}' panicked: {}", id, e);
+                                errors.push((id.clone(), e.to_string()));
+                                results.push((PrepareStepResult::Failed(id.clone()), vec![]));
+                                deps.complete_failure(&id);
+                                for blocked_id in deps.blocked_providers() {
+                                    if let Some(job) = jobs.remove(&blocked_id) {
+                                        warn!(
+                                            "prepare provider '{}' skipped due to failed dependency",
+                                            job.id
+                                        );
+                                        results.push((PrepareStepResult::Skipped(job.id), vec![]));
+                                    }
+                                }
+                            } else {
+                                warn!("prepare task join error (unknown task): {e}");
+                            }
+                        }
+                    }
+                }
+
+                // Receive next ready provider
+                Some(maybe_id) = rx.recv() => {
+                    let Some(id) = maybe_id else {
+                        // None = all done
+                        break;
+                    };
+
+                    let Some(job) = jobs.remove(&id) else {
+                        continue;
+                    };
+
+                    let permit = semaphore.clone().acquire_owned().await.unwrap();
+                    let mpr = mpr.clone();
+                    let toolset_env = toolset_env.clone();
+
+                    let handle = join_set.spawn(async move {
+                        let pr = mpr.add(&job.cmd.description);
+                        let id = job.id;
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            Self::execute_prepare_static(&job.cmd, &toolset_env)
+                        }));
+                        drop(permit);
+
+                        match result {
+                            Ok(Ok(())) => {
+                                if job.touch {
+                                    Self::touch_outputs(&job.outputs);
+                                }
+                                pr.finish_with_message(format!("{} done", job.cmd.description));
+                                let step = PrepareStepResult::Ran(id.clone());
+                                Ok((id, step, job.outputs))
+                            }
+                            Ok(Err(e)) => {
+                                pr.finish_with_message(format!(
+                                    "{} failed: {}",
+                                    job.cmd.description, e
+                                ));
+                                Err((id, e))
+                            }
+                            Err(_) => {
+                                pr.finish_with_message(format!(
+                                    "{} panicked",
+                                    job.cmd.description
+                                ));
+                                Err((id, eyre::eyre!("task panicked")))
+                            }
+                        }
+                    });
+                    inflight.insert(handle.id(), id);
+                }
+
+                else => break,
+            }
+        }
+
+        // Wait for remaining in-flight tasks
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok(Ok((id, step_result, outputs))) => {
+                    inflight.retain(|_, v| v != &id);
+                    results.push((step_result, outputs));
+                }
+                Ok(Err((id, e))) => {
+                    inflight.retain(|_, v| v != &id);
+                    warn!("prepare provider '{}' failed: {}", id, e);
+                    errors.push((id.clone(), e.to_string()));
+                    results.push((PrepareStepResult::Failed(id), vec![]));
+                }
+                Err(e) => {
+                    if let Some(id) = inflight.remove(&e.id()) {
+                        warn!("prepare provider '{}' panicked: {}", id, e);
+                        errors.push((id.clone(), e.to_string()));
+                        results.push((PrepareStepResult::Failed(id), vec![]));
+                    } else {
+                        warn!("prepare task join error (unknown task): {e}");
+                    }
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            let details = errors
+                .iter()
+                .map(|(id, msg)| format!("  {id}: {msg}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(eyre::eyre!("prepare providers failed:\n{details}"));
+        }
+        Ok(results)
     }
 
     /// Check if outputs are newer than sources (stateless mtime comparison)
