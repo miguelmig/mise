@@ -1133,7 +1133,16 @@ pub fn get_locked_version(
         let mut matching: Vec<_> = tools
             .iter()
             .filter(|v| {
-                let version_matches = prefix == "latest" || v.version.starts_with(prefix);
+                let norm_prefix = prefix
+                    .strip_prefix('v')
+                    .or(prefix.strip_prefix('V'))
+                    .unwrap_or(prefix);
+                let norm_version = v
+                    .version
+                    .strip_prefix('v')
+                    .or(v.version.strip_prefix('V'))
+                    .unwrap_or(&v.version);
+                let version_matches = prefix == "latest" || norm_version.starts_with(norm_prefix);
                 let options_match = &v.options == request_options;
                 version_matches && options_match
             })
